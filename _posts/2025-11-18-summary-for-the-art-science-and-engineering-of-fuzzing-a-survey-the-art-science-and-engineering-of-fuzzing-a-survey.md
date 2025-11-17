@@ -1,6 +1,6 @@
 ---
 title: "Summary for The Art, Science, and Engineering of Fuzzing: A Survey"
-date: 2025-11-18 01:28:16 +0900
+date: 2025-11-18 01:41:18 +0900
 categories: [Papers]
 tags: []
 ---
@@ -10,7 +10,7 @@ tags: []
 ## Index
 - [1. Introduction](#introduction)
 - [2. Systemization, Taxonomy, And Test Programs](#systemization-taxonomy-and-test-programs) 
-	- [2.1 Fuzzing & Fuzz Testing](#fuzzing--fuzz-testing) 
+	- [2.1 Fuzzing & Fuzz Testing](#fuzzing-fuzz-testing) 
 	- [2.3 Fuzz Testing Algorithm](#fuzz-testing-algorithm) 
 	- [2.4 Taxonomy of Fuzzers](#taxonomy-of-fuzzers)
 - [3. Preprocess](#preprocess)

@@ -145,7 +145,20 @@ def convert_file(md_path, preview=True):
 
         # 파일명 생성 (날짜-제목.md)
         date_str = datetime.now().strftime("%Y-%m-%d")
-        filename = f"{date_str}-{slugify(title)}.md"
+        base_filename = f"{date_str}-{slugify(title)}.md"
+
+        # 파일명 충돌 방지: 원본 파일명 추가
+        # README.md, README_KR.md 같은 경우 구분하기 위해
+        original_stem = md_path.stem.lower()
+        if original_stem != 'readme':
+            # README가 아닌 경우 원본 파일명도 포함
+            base_filename = f"{date_str}-{slugify(title)}-{slugify(original_stem)}.md"
+        elif '_kr' in md_path.name.lower() or '_en' in md_path.name.lower():
+            # README_KR.md, README_EN.md 같은 경우
+            suffix = md_path.stem.split('_')[-1].lower()
+            base_filename = f"{date_str}-{slugify(title)}-{suffix}.md"
+
+        filename = base_filename
         dest_path = POSTS_DIR / filename
 
         result = {

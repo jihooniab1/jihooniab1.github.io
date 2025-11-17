@@ -1,6 +1,6 @@
 ---
 title: "Ocaml"
-date: 2025-11-18 01:28:16 +0900
+date: 2025-11-18 01:41:18 +0900
 categories: [KoreaUniv, Compiler]
 tags: []
 ---
@@ -15,7 +15,7 @@ tags: []
     - [1.4 Function](#function)
     - [1.5 Static Type System](#static-type-system)
     - [1.6 Pattern Matching](#pattern-matching)
-    - [1.7 Tuple & List](#tuple--list)
+    - [1.7 Tuple & List](#tuple-list)
     - [1.8 User defined type](#user-defined-type)
     - [1.9 Exception Handle](#exception-handle)
     - [1.10 Module](#module)

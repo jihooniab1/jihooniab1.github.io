@@ -1,6 +1,6 @@
 ---
 title: "Summary for "Fuzzing File Systems via Two-Dimensional Input Space Exploration""
-date: 2025-11-18 01:28:16 +0900
+date: 2025-11-18 01:41:18 +0900
 categories: [Papers]
 tags: []
 ---
@@ -8,7 +8,7 @@ tags: []
 # Summary for "Fuzzing File Systems via Two-Dimensional Input Space Exploration"
 
 # Index
-- [1. Introduction](#Introduction)
+- [1. Introduction](#introduction)
     - [1.1 Contribution](#contributions)
     - [1.2 Threat Model](#threat-model)
 - [2. Background and motivation](#background-and-motivation)

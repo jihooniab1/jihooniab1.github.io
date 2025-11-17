@@ -1,6 +1,6 @@
 ---
 title: "System hacking basic"
-date: 2025-11-18 01:28:16 +0900
+date: 2025-11-18 01:41:18 +0900
 categories: [CTF, Dreamhack, Pwnable]
 tags: []
 ---
@@ -13,8 +13,8 @@ Reminding system hacking basic things.
 - [1. Linux Memory Layout](#linux-memory-layout)
 - [2. Shell code](#shell-code)
 - [3. Stack BOF](#stack-buffer-overflow)
-- [4. NX & ASLR](#nx--aslr)
-- [5. PIE & RELRO](#pie--relro)
+- [4. NX & ASLR](#nx-aslr)
+- [5. PIE & RELRO](#pie-relro)
 - [6. Memory Corruption](#memory-corruption)
   - [6.1 Use After Free](#use-after-free-1)
   - [6.2 Double Free Bug](#double-free-bug)
