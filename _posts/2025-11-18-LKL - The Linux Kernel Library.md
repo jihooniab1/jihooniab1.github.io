@@ -1,8 +1,8 @@
 ---
-title: "Summary for LKL: The Linux Kernel Library"
-date: 2025-11-18 01:41:18 +0900
+title: "LKL: The Linux Kernel Library"
+date: 2025-11-18 00:00:00 +0900
 categories: [Papers]
-tags: []
+tags: [linux, lkl]
 ---
 
 # Summary for LKL: The Linux Kernel Library
