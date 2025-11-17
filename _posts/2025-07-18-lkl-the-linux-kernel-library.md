@@ -1,6 +1,6 @@
 ---
 title: "LKL: The Linux Kernel Library"
-date: 2025-11-18 00:00:00 +0900
+date: 2025-07-18 00:00:00 +0900
 categories: [Papers]
 tags: [linux, lkl]
 permalink: /posts/lkl-the-linux-kernel-library/
