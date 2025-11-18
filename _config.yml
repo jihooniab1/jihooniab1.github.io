@@ -14,7 +14,7 @@ timezone: Asia/Seoul
 # jekyll-seo-tag settings › https://github.com/jekyll/jekyll-seo-tag/blob/master/docs/usage.md
 # ↓ --------------------------
 
-title: 늦깎이 만학도 거북이 블로그
+title: 거북이 블로그
 
 tagline: 보안 공부 기록하는 곳
 
@@ -29,7 +29,7 @@ github:
   username: jihooniab1
 
 twitter:
-  username: twitter_username # change to your Twitter username
+  username: jihoonab151 # change to your Twitter username
 
 social:
   # Change to your full name.
@@ -38,8 +38,8 @@ social:
   email: jimmyxyz@korea.ac.kr # change to your email address
   links:
     # The first element serves as the copyright owner's link
-    - https://twitter.com/username # change to your Twitter homepage
-    - https://github.com/username # change to your GitHub homepage
+    - https://twitter.com/jihoonab151 # change to your Twitter homepage
+    - https://github.com/jihooniab1 # change to your GitHub homepage
     # Uncomment below to add more social links
     # - https://www.facebook.com/username
     # - https://www.linkedin.com/in/username
@@ -98,7 +98,7 @@ theme_mode: light # [light | dark]
 cdn:
 
 # the avatar on sidebar, support local or CORS resources
-avatar:
+avatar: /assets/img/avatar.gif
 
 # The URL of the site-wide social preview image used in SEO `og:image` meta tag.
 # It can be overridden by a customized `page.image` in front matter.
