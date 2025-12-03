@@ -30,7 +30,7 @@ START:
     ; 화면을 모두 지우고, 속성값을 녹색으로 설정
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     mov si,    0                    ; SI 레지스터(문자열 원본 인덱스 레지스터)를 초기화
-        
+
 .SCREENCLEARLOOP:                   ; 화면을 지우는 루프
     mov byte [ es: si ], 0          ; 비디오 메모리의 문자가 위치하는 어드레스에
                                     ; 0을 복사하여 문자를 삭제
@@ -42,7 +42,7 @@ START:
 
     cmp si, 80 * 25 * 2     ; 화면의 전체 크기는 80 문자 * 25 라인임
                             ; 출력한 문자의 수를 의미하는 SI 레지스터와 비교
-    jl .SCREENCLEARLOOP     ; SI 레지스터가 80 * 25 * 2보다 작다면 아직 지우지 
+    jl .SCREENCLEARLOOP     ; SI 레지스터가 80 * 25 * 2보다 작다면 아직 지우지
                             ; 못한 영역이 있으므로 .SCREENCLEARLOOP 레이블로 이동
     
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -69,16 +69,26 @@ START:
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     ; 디스크를 읽기 전에 먼저 리셋
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 RESETDISK:                          ; 디스크를 리셋하는 코드의 시작
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-    ; BIOS Reset Function 호출
+    ; BIOS Get Drive Parameters (INT 13h AH=08h)로 실제 geometry 확인
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-    ; 서비스 번호 0, 드라이브 번호(0=Floppy)
-    mov ax, 0
-    mov dl, 0              
-    int 0x13     
-    ; 에러가 발생하면 에러 처리로 이동
-    jc  HANDLEDISKERROR
+    mov ah, 0x08
+    mov dl, 0x80                        ; 하드디스크(0x80)로 하드코딩
+    int 0x13
+    jc .USE_DEFAULT                     ; 실패하면 기본값 사용
+
+    and cl, 0x3F                        ; CL의 하위 6비트가 sectors per track
+    mov byte [ MAXSECTOR ], cl
+    mov byte [ MAXHEAD ], dh            ; DH가 최대 헤드 번호 (0부터 시작)
+    jmp .SKIP_DEFAULT
+
+.USE_DEFAULT:
+    mov byte [ MAXSECTOR ], 63          ; 하드디스크 기본값 63
+    mov byte [ MAXHEAD ], 15            ; 하드디스크 기본값 헤드 15 (0-15, 총 16개)
+
+.SKIP_DEFAULT:
         
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     ; 디스크에서 섹터를 읽음
@@ -106,9 +116,11 @@ READDATA:                           ; 디스크를 읽는 코드의 시작
     mov ch, byte [ TRACKNUMBER ]        ; 읽을 트랙 번호 설정
     mov cl, byte [ SECTORNUMBER ]       ; 읽을 섹터 번호 설정
     mov dh, byte [ HEADNUMBER ]         ; 읽을 헤드 번호 설정
-    mov dl, 0x00                        ; 읽을 드라이브 번호(0=Floppy) 설정
+    mov dl, 0x80                        ; 하드디스크(0x80)로 하드코딩
     int 0x13                            ; 인터럽트 서비스 수행
     jc HANDLEDISKERROR                  ; 에러가 발생했다면 HANDLEDISKERROR로 이동
+
+    mov si, es                          ; 현재 ES 값 저장 (다음에 사용)
     
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     ; 복사할 어드레스와 트랙, 헤드, 섹터 어드레스 계산
@@ -117,25 +129,31 @@ READDATA:                           ; 디스크를 읽는 코드의 시작
                         ; 값으로 변환
     mov es, si          ; ES 세그먼트 레지스터에 더해서 어드레스를 한 섹터 만큼 증가
     
-    ; 한 섹터를 읽었으므로 섹터 번호를 증가시키고 마지막 섹터(18)까지 읽었는지 판단
+    ; 한 섹터를 읽었으므로 섹터 번호를 증가시키고 마지막 섹터까지 읽었는지 판단
     ; 마지막 섹터가 아니면 섹터 읽기로 이동해서 다시 섹터 읽기 수행
     mov al, byte [ SECTORNUMBER ]       ; 섹터 번호를 AL 레지스터에 설정
     add al, 0x01                        ; 섹터 번호를 1 증가
     mov byte [ SECTORNUMBER ], al       ; 증가시킨 섹터 번호를 SECTORNUMBER에 다시 설정
-    cmp al, 19                          ; 증가시킨 섹터 번호를 19와 비교
-    jl READDATA                         ; 섹터 번호가 19 미만이라면 READDATA로 이동
-    
-    ; 마지막 섹터까지 읽었으면(섹터 번호가 19이면) 헤드를 토글(0->1, 1->0)하고, 
-    ; 섹터 번호를 1로 설정
-    xor byte [ HEADNUMBER ], 0x01       ; 헤드 번호를 0x01과 XOR하여 토글(0->1, 1->1)
+
+    ; BIOS로부터 얻은 최대 섹터 번호와 비교
+    mov bl, byte [ MAXSECTOR ]
+    add bl, 1                           ; MAXSECTOR + 1과 비교
+    cmp al, bl
+    jl READDATA                         ; 섹터 번호가 (MAXSECTOR+1) 미만이라면 READDATA로 이동
+
+    ; 마지막 섹터까지 읽었으면 헤드를 증가시키고 섹터 번호를 1로 설정
     mov byte [ SECTORNUMBER ], 0x01     ; 섹터 번호를 다시 1로 설정
-    
-    ; 만약 헤드가 1->0로 바뀌었으면 양쪽 헤드를 모두 읽은 것이므로 아래로 이동하여
-    ; 트랙 번호를 1 증가
-    cmp byte [ HEADNUMBER ], 0x00       ; 헤드 번호를 0x00과 비교
-    jne READDATA                        ; 헤드 번호가 0이 아니면 READDATA로 이동
-    
-    ; 트랙을 1 증가시킨 후, 다시 섹터 읽기로 이동
+    add byte [ HEADNUMBER ], 0x01       ; 헤드 번호를 1 증가
+
+    ; 헤드 번호가 최대값을 초과하면 트랙 번호를 증가
+    mov al, byte [ HEADNUMBER ]
+    mov bl, byte [ MAXHEAD ]
+    add bl, 1                           ; MAXHEAD + 1과 비교
+    cmp al, bl
+    jl READDATA                         ; 헤드 번호가 (MAXHEAD+1) 미만이면 READDATA로 이동
+
+    ; 모든 헤드를 읽었으면 트랙을 1 증가시키고 헤드를 0으로 리셋
+    mov byte [ HEADNUMBER ], 0x00       ; 헤드 번호를 0으로 리셋
     add byte [ TRACKNUMBER ], 0x01      ; 트랙 번호를 1 증가
     jmp READDATA                        ; READDATA로 이동
 READEND:
@@ -248,6 +266,8 @@ LOADINGCOMPLETEMESSAGE: db  'Complete~!!', 0
 SECTORNUMBER:           db  0x02    ; OS 이미지가 시작하는 섹터 번호를 저장하는 영역
 HEADNUMBER:             db  0x00    ; OS 이미지가 시작하는 헤드 번호를 저장하는 영역
 TRACKNUMBER:            db  0x00    ; OS 이미지가 시작하는 트랙 번호를 저장하는 영역
+MAXSECTOR:              db  0x3F    ; 트랙당 최대 섹터 수 (기본값 63, 하드디스크)
+MAXHEAD:                db  0x0F    ; 최대 헤드 번호 (기본값 15, 즉 0-15 총 16개)
     
 times 510 - ( $ - $$ )    db    0x00    ; $ : 현재 라인의 어드레스
                                         ; $$ : 현재 섹션(.text)의 시작 어드레스
