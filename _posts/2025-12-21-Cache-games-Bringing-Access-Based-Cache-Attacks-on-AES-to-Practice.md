@@ -12,9 +12,6 @@ math: true
 # Index
 - [1. Introduction](#introduction)
 - [2. Preliminaries](#preliminaries)
-- [3. The Flush+Reload Technique](#the_flush_reload_technique)
-- [4. Attacking GnuPG](#attacking_gnupg)
-- [5. Mitigation Techniques](#mitigation_techniques)
 
 # Introduction
 **부채널 공격(Side channel attacks)** 은 암호 시스템의 구현 레벨에 대한 공격들입니다. 특정 연산의 시간 소모량, 전력 소모량, 전자기파 방출 등을 통해 정보를 유출시킵니다. 특히, 지난 몇년간 마이크로 프로세서의 **캐시 접근 메커니즘(cache access mechanism)** 을 기반으로 한 여러 부채널 공격들이 지난 몇 년간 활발하게 연구 되었습니다. 이러한 부채널 공격들은 `시간 기반(time-driven)`, `추적 기반(trace-driven)`, `접근 기반(access-driven)` 공격으로 나뉩니다.

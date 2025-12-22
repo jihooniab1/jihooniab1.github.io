@@ -11,9 +11,5 @@ math: true
 
 # Index
 - [1. Introduction](#introduction)
-- [2. Preliminaries](#preliminaries)
-- [3. The Flush+Reload Technique](#the_flush_reload_technique)
-- [4. Attacking GnuPG](#attacking_gnupg)
-- [5. Mitigation Techniques](#mitigation_techniques)
 
 # Introduction
