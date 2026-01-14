@@ -696,36 +696,19 @@ https://school.programmers.co.kr/learn/courses/30/lessons/72413
 
 먼저 다익스트라 알고리즘을 자세하게 알아보자
 #### Dijkstra
-다익스트라 알고리즘
-목적: 하나의 시작점에서 모든 노드까지의 최단 거리를 구한다.
-핵심 원리
-"현재까지 가장 가까운 노드부터 처리하면, 그 노드의 최단 거리는 확정된다"
-동작 과정
-예시 그래프:
-    (2)
-  1 ----→ 2
-  |       |
-(5)|      |(1)
-  ↓       ↓
-  3 ←---- 4
-    (1)
-시작점: 1
-단계처리 노드distance 배열설명초기-[0, ∞, ∞, ∞]시작점만 011[0, 2, 5, ∞]1과 연결된 노드 갱신22[0, 2, 5, 3]2와 연결된 노드 갱신34[0, 2, 4, 3]4→3 경로가 더 짧음 (3+1=4 < 5)43[0, 2, 4, 3]완료
-왜 "가장 가까운 노드부터"인가?
-가장 가까운 노드는 더 짧은 경로가 존재할 수 없습니다. 다른 경로를 거치면 무조건 더 길어지기 때문입니다. 그래서 그 노드의 거리를 확정하고, 그 노드를 통해 다른 노드들의 거리를 갱신합니다.
+다익스트라 알고리즘의 목적은 **하나의 시작점에서 모든 노드까지의 최단 거리를 구하는 것** 이다. 현재까지 가장 가까운 노드부터 처리하면 그 노드의 최단 거리는 확정된다는 원리를 갖고 작동한다. 이 가정이 계속 통하려면 음수 간선이 있어서는 안된다. 그래프는 인접 행렬, 인접 리스트 둘다 상관없지만 공간 복잡도 측면에서 인접 리스트를 다루는 것이 유리하다. 다익스트라 알고리즘 코드는 다음과 같다.
 
-우선순위 큐 버전 코드
-pythonimport heapq
+```
+import heapq
 
 def dijkstra(start, n, graph):
     distance = [INF] * (n + 1)
     distance[start] = 0
-    pq = [(0, start)]  # (거리, 노드)
+    pq = [(0, start)]  
     
     while pq:
         dist, now = heapq.heappop(pq)
         
-        # 이미 더 짧은 거리로 처리된 노드면 스킵
         if dist > distance[now]:
             continue
             
@@ -736,36 +719,36 @@ def dijkstra(start, n, graph):
                 heapq.heappush(pq, (new_cost, next_node))
     
     return distance
-한 줄씩 설명
-초기화
-pythondistance = [INF] * (n + 1)
+```
+
+코드를 분석해보자. 
+
+```
+INF = int(1e9)
+
+distance = [INF] * (n + 1)
 distance[start] = 0
 pq = [(0, start)]
+```
+먼저 모든 거리를 `무한대`로 초기화한다. 시작점 거리는 0으로 설정한다. 힙에 **(거리, 노드)** 형태로 시작점을 추가한다. 
 
-모든 거리를 무한대로 초기화
-시작점 거리는 0
-힙에 시작점 추가 (거리, 노드) 형태
-
-메인 루프
-pythonwhile pq:
+```
+while pq:
     dist, now = heapq.heappop(pq)
+```
+메인 루프는 힙에서 가장 거리가 짧은 노드를 꺼내는데, 우선순위 큐를 사용하니 힙이 알아서 최솟값을 관리한다.
 
-힙에서 가장 거리가 짧은 노드를 꺼냄
-힙이 자동으로 최솟값을 관리해줌
-
-스킵 조건
-pythonif dist > distance[now]:
+```
+if dist > distance[now]:
     continue
+```
+이미 그 노드가 더 짧은 거리로 처리가 되어 있다면 무시한다.
 
-같은 노드가 힙에 여러 번 들어갈 수 있음
-이미 더 짧은 거리로 처리됐으면 무시
-
-거리 갱신
-pythonfor next_node, cost in graph[now]:
+```
+for next_node, cost in graph[now]:
     new_cost = dist + cost
     if new_cost < distance[next_node]:
         distance[next_node] = new_cost
         heapq.heappush(pq, (new_cost, next_node))
-
-현재 노드와 연결된 모든 노드 확인
-더 짧은 경로 발견 시 거리 갱신하고 힙에 추가
+```
+현재 노드와 연결된 모든 노드를 확인하여 더 짧은 경로를 찾으면 **거리를 갱신하고 힙에 추가** 한다. 
