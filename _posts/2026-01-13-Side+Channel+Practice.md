@@ -170,6 +170,7 @@ ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                  [vsysca
 ```
 
 페이지의 크기는 4KB이며, 위의 결과에서 각 주소 범위들은 전부 0x1000 크기의 페이지들로 구성되어 있다고 보면 됩니다. 아래 표와 같이 `pagemap` 파일을 룩업 테이블처럼 활용하여 가상 주소와 매핑 되어 있는 실제 물리 페이지 엔트리 넘버와 오프셋, 상태 등을 알아낼 수 있습니다. 
+
 | Page | Virtual Addr | Permission    | Status       | Phys Addr     |
 |------|--------------|---------------|--------------|---------------|
 |  1   | 0x400000   | r--p (Header) | Present      | 0x3e16e7000   |
@@ -314,3 +315,264 @@ int main(int argc, char *argv[]) {
 원리는 간단합니다. victim 바이너리를 그대로 mmap으로 메모리에 올리면, OS는 메모리 효울성을 높이기 위해 이미 Victim 프로세스에 의해 물리 메모리(RAM)에 로드된 페이지를 새로 복사하지 않고, Spy 프로세스도 그 **똑같은 물리 페이지를 가리키도록 매핑(Page Deduplication)** 해버립니다. `mmap`을 할 때 커널은 fd가 가리키는 파일이 물리 메모리에 이미 올라와 있는지 확인을 하고, 만약 그렇다면 그 PFN을 **spy의 page table** 에도 끼워넣습니다. 주석에도 나와있듯이 mmap만 하고 끝내면 커널이 실제 물리 메모리를 연결해주지 않기 때문에, spy가 주소의 값을 읽으려 시도하면, **CPU의 페이지 폴트** 가 발생하면서 PTE를 채웁니다. 
 
 이제 물리 메모리 페이지가 공유되는 것을 확인했으니 FLUSH+RELOAD 공격을 시도할 수 있습니다. 논문과 똑같이 GnuPG를 victim으로 활용해보겠습니다. 1.4.14 이후 버전은 **Square-and-Multiply-Always** 패치가 적용되어 있으니, 취약한 이전 버전을 대상으로 하겠습니다. `wget https://gnupg.org/ftp/gcrypt/gnupg/gnupg-1.4.13.tar.bz2` 이 링크에서 취약한 버전을 받을 수 있습니다. 
+
+```
+./configure \
+    CFLAGS="-g -O2 -no-pie -fno-pie -fcommon" \
+    LDFLAGS="-no-pie" \
+    --disable-asm
+
+make -j$(nproc)
+```
+
+위 옵션을 갖고 빌드를 진행했습니다.
+- -g: 심볼을 포함
+- -O2: 논문과 동일한 최적화 레벨
+- -no-pie: PIE 비활성화
+- -fno-pie: Position Independent Code 비활성화
+- -fcommon: GCC 10부터는 이걸 붙여줘야 `multiple definition` 링커 오류가 방지되는 듯
+- --disable-asm: 어셈블리 최적화 끄기
+
+빌드가 완료되면 g10 디렉터리에 gpg 바이너리가 위치하게 됩니다. Probe할 Square, Reduce, Multiply의 경우 다음 함수들의 주소를 사용합니다. 
+
+```c
+void
+mpih_sqr_n_basecase( mpi_ptr_t prodp, mpi_ptr_t up, mpi_size_t size )
+{
+    mpi_size_t i;
+    mpi_limb_t cy_limb;
+    mpi_limb_t v_limb;
+
+    /* Multiply by the first limb in V separately, as the result can be
+     * stored (not added) to PROD.  We also avoid a loop for zeroing.  */
+    v_limb = up[0];
+    if( v_limb <= 1 ) {
+	if( v_limb == 1 )
+	    MPN_COPY( prodp, up, size );
+	else
+	    MPN_ZERO(prodp, size);
+	cy_limb = 0;
+    }
+    else
+	cy_limb = mpihelp_mul_1( prodp, up, size, v_limb );
+
+    prodp[size] = cy_limb;
+    prodp++;
+
+    /* For each iteration in the outer loop, multiply one limb from
+     * U with one limb from V, and add it to PROD.  */
+    for( i=1; i < size; i++) {
+	v_limb = up[i];
+	if( v_limb <= 1 ) {
+	    cy_limb = 0;
+	    if( v_limb == 1 )
+		cy_limb = mpihelp_add_n(prodp, prodp, up, size);
+	}
+	else
+	    cy_limb = mpihelp_addmul_1(prodp, up, size, v_limb);
+
+	prodp[size] = cy_limb;
+	prodp++;
+    }
+}
+```
+이 함수는 GnuPG 라이브러리 내부에서 **큰 수(multi-precision integer)를 제곱** 할 때 사용하는 함수입니다. prodp는 `Product Pointer`를 의미하며 결과값이 저장될 메모리 주소입니다. up은 **입력값(U)이 저장된 메모리 주소** 로, 이 함수는 U x U를 하기 때문에 입력은 up 하나만 필요합니다. size는 입력값의 길이입니다. 그리고 Limb는 큰 수를 저장하는 단위이며 보통 64비트 정수를 의미합니다. 코드에서는 `v_limb` 입니다. 이 함수에서는 up의 메모리 주소로부터 **Limb 단위로** 가져와서 계산을 하고 결과를 누적시킵니다. Square 연산의 probing에는 이 함수의 주소를 사용합니다.
+
+```c
+mpi_limb_t
+mpihelp_mul( mpi_ptr_t prodp, mpi_ptr_t up, mpi_size_t usize,
+			      mpi_ptr_t vp, mpi_size_t vsize)
+{
+    mpi_ptr_t prod_endp = prodp + usize + vsize - 1;
+    mpi_limb_t cy;
+    struct karatsuba_ctx ctx;
+
+    if( vsize < KARATSUBA_THRESHOLD ) {
+	mpi_size_t i;
+	mpi_limb_t v_limb;
+
+	if( !vsize )
+	    return 0;
+
+	/* Multiply by the first limb in V separately, as the result can be
+	 * stored (not added) to PROD.	We also avoid a loop for zeroing.  */
+	v_limb = vp[0];
+	if( v_limb <= 1 ) {
+	    if( v_limb == 1 )
+		MPN_COPY( prodp, up, usize );
+	    else
+		MPN_ZERO( prodp, usize );
+	    cy = 0;
+	}
+	else
+	    cy = mpihelp_mul_1( prodp, up, usize, v_limb );
+
+	prodp[usize] = cy;
+	prodp++;
+
+	/* For each iteration in the outer loop, multiply one limb from
+	 * U with one limb from V, and add it to PROD.	*/
+	for( i = 1; i < vsize; i++ ) {
+	    v_limb = vp[i];
+	    if( v_limb <= 1 ) {
+		cy = 0;
+		if( v_limb == 1 )
+		   cy = mpihelp_add_n(prodp, prodp, up, usize);
+	    }
+	    else
+		cy = mpihelp_addmul_1(prodp, up, usize, v_limb);
+
+	    prodp[usize] = cy;
+	    prodp++;
+	}
+
+	return cy;
+    }
+
+    memset( &ctx, 0, sizeof ctx );
+    mpihelp_mul_karatsuba_case( prodp, up, usize, vp, vsize, &ctx );
+    mpihelp_release_karatsuba_ctx( &ctx );
+    return *prod_endp;
+}
+```
+Multiply 연산의 probing에 사용할 함수입니다. up은 지금까지 계산된 중간값, vp는 곱해줘야 하는 암호문을 의미합니다(Base, Ciphertext). `KARATSUA_THRESHOLD`보다 숫자가 작으면 세로셈 곱셈을 직접 수행하고, 수가 기준을 넘으면 고속 곱셈 알고리즘을 호출하여 계산합니다. Reduce 연산은 **mpihelp_divrem** 함수의 주소를 사용합니다. 공격의 대상이 되는 main loop는 mpi-pow.c의 182 line에 있습니다.
+
+```c
+for(;;) {
+    while( c ) {
+	mpi_ptr_t tp;
+	mpi_size_t xsize;
+
+	/*mpihelp_mul_n(xp, rp, rp, rsize);*/
+	if( rsize < KARATSUBA_THRESHOLD )
+	    mpih_sqr_n_basecase( xp, rp, rsize );
+	else {
+	    if( !tspace ) {
+		tsize = 2 * rsize;
+		tspace = mpi_alloc_limb_space( tsize, 0 );
+	    }
+	    else if( tsize < (2*rsize) ) {
+		mpi_free_limb_space( tspace );
+		tsize = 2 * rsize;
+		tspace = mpi_alloc_limb_space( tsize, 0 );
+	    }
+	    mpih_sqr_n( xp, rp, rsize, tspace );
+	}
+
+	xsize = 2 * rsize;
+	if( xsize > msize ) {
+	    mpihelp_divrem(xp + msize, 0, xp, xsize, mp, msize);
+	    xsize = msize;
+	}
+
+	tp = rp; rp = xp; xp = tp;
+	rsize = xsize;
+
+	if( (mpi_limb_signed_t)e < 0 ) {
+	    /*mpihelp_mul( xp, rp, rsize, bp, bsize );*/
+	    if( bsize < KARATSUBA_THRESHOLD ) {
+		mpihelp_mul( xp, rp, rsize, bp, bsize );
+	    }
+	    else {
+		mpihelp_mul_karatsuba_case(
+			     xp, rp, rsize, bp, bsize, &karactx );
+	    }
+
+	    xsize = rsize + bsize;
+	    if( xsize > msize ) {
+		mpihelp_divrem(xp + msize, 0, xp, xsize, mp, msize);
+		xsize = msize;
+	    }
+
+	    tp = rp; rp = xp; xp = tp;
+	    rsize = xsize;
+	}
+	e <<= 1;
+	c--;
+    }
+
+    i--;
+    if( i < 0 )
+	break;
+    e = ep[i];
+    c = BITS_PER_MPI_LIMB;
+}
+```
+루프가 시작하자마자 Square 연산을 무조건 실행 후, `msize`보다 숫자가 커지면 modulo 연산을 하는 부분이 있습니다. 
+
+```c
+if( (mpi_limb_signed_t)e < 0 ) {
+```
+이 조건문이 중요한 분기점입니다. 비트가 1인지 확인하는 조건문으로, **맨 앞 비트가 1인지 여부** 를 확인하는 부분입니다. 그리고 비트가 1일 때만 Multiply 연산이 조건부로 실행이 되는 것을 확인할 수 있습니다. 이제 실제로 gpg 바이너리를 실행해보겠습니다. 
+
+```
+user@Ubuntu:~/css/flush-reload-attacks/gnupg-1.4.13$ mkdir -p ~/.gnupg-test
+user@Ubuntu:~/css/flush-reload-attacks/gnupg-1.4.13$ chmod 700 ~/.gnupg-test
+user@Ubuntu:~/css/flush-reload-attacks/gnupg-1.4.13$ ./gpg --homedir ~/.gnu
+.gnupg/      .gnupg-test/ 
+user@Ubuntu:~/css/flush-reload-attacks/gnupg-1.4.13$ ./gpg --homedir ~/.gnupg-test --gen-key
+gpg (GnuPG) 1.4.13; Copyright (C) 2012 Free Software Foundation, Inc.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+
+gpg: keyring `/home/user/.gnupg-test/secring.gpg' created
+gpg: keyring `/home/user/.gnupg-test/pubring.gpg' created
+Please select what kind of key you want:
+   (1) RSA and RSA (default)
+   (2) DSA and Elgamal
+   (3) DSA (sign only)
+   (4) RSA (sign only)
+Your selection? 1
+RSA keys may be between 1024 and 4096 bits long.
+What keysize do you want? (2048) 2048
+Requested keysize is 2048 bits       
+Please specify how long the key should be valid.
+         0 = key does not expire
+      <n>  = key expires in n days
+      <n>w = key expires in n weeks
+      <n>m = key expires in n months
+      <n>y = key expires in n years
+Key is valid for? (0) 0
+Key does not expire at all
+Is this correct? (y/N) y
+                        
+You need a user ID to identify your key; the software constructs the user ID
+from the Real Name, Comment and Email Address in this form:
+    "Heinrich Heine (Der Dichter) <heinrichh@duesseldorf.de>"
+
+Real name: flush+reload_test
+Email address: flush@reload.kr
+Comment:                      
+You selected this USER-ID:
+    "flush+reload_test <flush@reload.kr>"
+
+Change (N)ame, (C)omment, (E)mail or (O)kay/(Q)uit? o
+You need a Passphrase to protect your secret key.    
+```
+테스트용 디렉토리 환경을 만들고 secret key를 만들어줍니다. 
+
+```
+user@Ubuntu:~/css/flush-reload-attacks/gnupg-1.4.13$ echo "Secret Message for flush+reload test" > plain.txt
+
+user@Ubuntu:~/css/flush-reload-attacks/gnupg-1.4.13$ ./gpg --homedir ~/.gnupg-test --encrypt --recipient "flush@reload.kr" plain.txt
+user@Ubuntu:~/css/flush-reload-attacks/gnupg-1.4.13$ file plain.txt
+plain.txt      plain.txt.gpg  
+
+```
+이런 식으로 테스트용 평문을 만들어줍니다. 그 후 암호화를 수행하여 **plain.txt.gpg** 를 만들어줍니다.
+
+```
+user@Ubuntu:~/css/flush-reload-attacks/gnupg-1.4.13$ ./gpg --homedir ~/.gnupg-test --decrypt plain.txt.gpg 
+
+You need a passphrase to unlock the secret key for
+user: "flush+reload_test <flush@reload.kr>"
+
+2048-bit RSA key, ID CB6B6A70, created 2026-01-15 (main key ID 8F0CBE6A)
+
+gpg: encrypted with 2048-bit RSA key, ID CB6B6A70, created 2026-01-15
+      "flush+reload_test <flush@reload.kr>"
+Secret Message for flush+reload test
+```
+
+그 후 이런 식으로 복호화를 진행할 수 있습니다.
+

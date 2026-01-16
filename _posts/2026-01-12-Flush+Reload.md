@@ -12,7 +12,7 @@ math: true
 ## Introduction
 시스템의 메모리 점유율(memory footprint)을 줄이기 위해, 시스템 소프트웨어는 프로세스들 사이에 동일한 메모리 페이지를 공유합니다. 이러한 공유는 페이지의 출처(source)에 기반하거나, 같은 내용을 담고 있는 페이지를 탐색해서 병합(coalescing)하는 방식에 기반할 수 있습니다(리눅스의 KSM-Kernel Same-page Merging). 서로 신뢰하지 않는 프로세스 간의 **격리** 를 유지하기 위해, 시스템은 공유된 페이지에 `read only`나 `copy-on-write` 등을 적용하는 하드웨어 메커니즘에 의존합니다. 프로세서는 프로세스가 공유 페이지의 내용을 바꾸지 못하도록 보장하지만, 다른 방식의 inter-process 간섭을 차단하는 데는 실패하기도 합니다. 
 
-이 간섭의 한가지 유형은 여러 프로세스가 **프로세서 캐시를 공유** 하기 때문에 발생합니다. 어던 프로세스가 메모리에 있는 공유 페이지에 접근하면, 그 접근한 메모리 위치의 내용이 캐시에 저장됩니다(cached). https://jihooniab1.github.io/posts/Cache-games-Bringing-Access-Based-Cache-Attacks-on-AES-to-Practiced/ 이 논문은 이러한 특성을 활용하여 공유 메모리 페이지에 대한 접근 정보를 추출하는 부채널 공격을 소개했습니다. `clflush` 명령어로 감시 대상 메모리 위치를 캐시에서 강제로 축출(evict)한 다음에, victim 프로세스가 잠깐 실행되게 두고 나서 데이터가 캐시에 들어있는지 확인하는 방식입니다. 본 연구에서는 `clflush` 명령어가 **Last-Level-Cache (LLC)** 를 포함한 모든 캐시 레벨에서 메모리 라인을 축출하는 것을 확인하였고, 이에 기반하여 기존의 연구를 발전시킨 **FLUSH+RELOAD** 공격을 설계하였습니다(cross core, cross VM 가능). 
+이 간섭의 한가지 유형은 여러 프로세스가 **프로세서 캐시를 공유** 하기 때문에 발생합니다. 어떤 프로세스가 메모리에 있는 공유 페이지에 접근하면, 그 접근한 메모리 위치의 내용이 캐시에 저장됩니다(cached). [이전 논문](/posts/Cache-games-Bringing-Access-Based-Cache-Attacks-on-AES-to-Practiced/)은 이러한 특성을 활용하여 공유 메모리 페이지에 대한 접근 정보를 추출하는 부채널 공격을 소개했습니다. `clflush` 명령어로 감시 대상 메모리 위치를 캐시에서 강제로 축출(evict)한 다음에, victim 프로세스가 잠깐 실행되게 두고 나서 데이터가 캐시에 들어있는지 확인하는 방식입니다. 본 연구에서는 `clflush` 명령어가 **Last-Level-Cache (LLC)** 를 포함한 모든 캐시 레벨에서 메모리 라인을 축출하는 것을 확인하였고, 이에 기반하여 기존의 연구를 발전시킨 **FLUSH+RELOAD** 공격을 설계하였습니다(cross core, cross VM 가능). 
 
 FLUSH+RELOAD 공격의 특징은 다음과 같습니다.
 
@@ -55,7 +55,7 @@ RSA는 암호화와 서명을 지원하는 **공개키 암호화** 시스템으�
 
 **CRT-RSA** 는 복호화 함수 구현을 위해 흔히 사용되는 최적화 기법으로, 비밀키 $d$를 $d_p = d \pmod{p - 1}$과 $d_q = d \pmod{q-1}$ 두 부분으로 나누고, 메시지의 두 부분인 $m_p = c^{d_p} \pmod p$와 $m_q = c^{d_q} \pmod q$를 계산합니다. 그 후 Garner의 공식을 사용하여 $m_p$와 $m_q$로부터 $m$을 계산합니다: $$h = (m_p - m_q)(q^{-1} \pmod p) \pmod p$$ $$m = m_q + hq$$
 
-암호화 및 복호화 함수를 계산하기 위해, 4.1.14 버전 이전의 GnuPG와 1.5.3 버전 이전의 관련 libgcrypt는 **square-and-multiply 거듭제곱 알고리즘** 을 사용합니다. Square-and-multiply는 지수 $e$의 이진 표현 비트들을 스캔하여 $x = b^e \pmod m$을 계산합니다.$e$의 이진 표현이 $2^{n-1}e_{n-1} + \dots + 2^0e_0$으로 주어졌을 때, square-and-multiply는 공식 $x_{i-1} = x_i^2 b^{e_{i-1}}$을 사용하여 $x_i = b^{\lfloor e/2^i \rfloor} \pmod m$을 만족하는 중간값들의 수열 $x_{n-1}, \dots, x_0$를 계산합니다. 아래 코드는 square-and-multiply의 의사 코드를 보여줍니다. <br>
+암호화 및 복호화 함수를 계산하기 위해, 1.4.14 버전 이전의 GnuPG와 1.5.3 버전 이전의 관련 libgcrypt는 **square-and-multiply 거듭제곱 알고리즘** 을 사용합니다. Square-and-multiply는 지수 $e$의 이진 표현 비트들을 스캔하여 $x = b^e \pmod m$을 계산합니다.$e$의 이진 표현이 $2^{n-1}e_{n-1} + \dots + 2^0e_0$으로 주어졌을 때, square-and-multiply는 공식 $x_{i-1} = x_i^2 b^{e_{i-1}}$을 사용하여 $x_i = b^{\lfloor e/2^i \rfloor} \pmod m$을 만족하는 중간값들의 수열 $x_{n-1}, \dots, x_0$를 계산합니다. 아래 코드는 square-and-multiply의 의사 코드를 보여줍니다. <br>
 
 ![f2](/assets/img/posts/papers/flush_reload_2.png) <br>
 
