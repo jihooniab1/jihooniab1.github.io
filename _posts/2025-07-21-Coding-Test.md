@@ -752,3 +752,173 @@ for next_node, cost in graph[now]:
         heapq.heappush(pq, (new_cost, next_node))
 ```
 현재 노드와 연결된 모든 노드를 확인하여 더 짧은 경로를 찾으면 **거리를 갱신하고 힙에 추가** 한다. 
+
+### 전력망을 둘로 나누기 (Lv 2, BFS)
+https://school.programmers.co.kr/learn/courses/30/lessons/86971
+
+몇 가지 실수한 점이 있는 문제였다. 나는 인접 행렬을 만들어서, 간선 하나를 제외하면서 반복하며 트리 크기를 계산했는데, 
+
+1. 인접 행렬 대신 가급적이면 인접 리스트를 쓰는 것이 좋은 것 같다. 미리미리 습관을 들여 놓아야 좋을 것 같다. 제외하는 간선의 경우, 헷갈리게 테이블에서 일일이 지우고 다시 그리지 말고 그냥 bfs 루트에서 처리할 수 있는 좋은 방법이 있었다.
+2. 그리고 문제를 풀 때 그 트리의 크기를 모두 계산했는데, 사실 전체 트리 크기에서 하나만 구하면 다른 하나는 저절로 나온다는 사실 또한 떠올리지 못하였다.(효율의 문제)
+
+### 프로세스 (Lv 2, deque)
+https://school.programmers.co.kr/learn/courses/30/lessons/42587
+
+**deque** 를 쓰는 생각을 잘 못해서, 이상하게 풀고 이상하게 틀린 문제이다. 최댓값을 찾는다는 점에서는 heapq가 생각날 수도 있지만, **순서를 유지** 해야한다는 점에서 적합하지 않다. 대신 deque를 사용하여 일단 arr[0]에서 뽑고 대상이 아니면 뒤로 붙여서 순환시키는 방법을 사용할 수 있다. 
+
+```
+from collections import deque
+
+def solution(priorities, location):
+    queue = deque((p, i) for i, p in enumerate(priorities))
+    order = 0
+    
+    while queue:
+        cur = queue.popleft()  
+        
+        if any(cur[0] < q[0] for q in queue):
+            queue.append(cur) 
+        else:
+            order += 1
+            if cur[1] == location:
+                return order
+```
+
+클로드의 코드를 참고한 코드이다. `enumerate`는 인자로 들어온 리스트의 원소들을 (인덱스, 원소) 쌍으로 반환하는 함수이다. 인덱스도 location과 비교를 하기 위해 필요하기 때문에 이렇게 초기화를 한다. 
+
+**any** 는 안에 있는게 하나라도 조건을 만족하면 True를 반환하는데, 위의 코드는 queue에 있는 원소 중 하나라도 우선순위가 더 큰 요소가 있는지 찾는 코드이다. 풀어쓰면 다음과 같다.
+```
+for q in queue:
+    if cur[0] < q[0]:
+        return True
+return False
+```
+
+deque을 사용하여 리스트를 순환시킨다는 아이디어가 제일 중요했던 것 같다. 
+
+### 길 찾기 게임 (Lv 3, 재귀, 트리)
+https://school.programmers.co.kr/learn/courses/30/lessons/42892
+
+문제를 너무 어렵게 생각해서 풀지 못하였다. y 좌표를 기준으로 정렬하여 루트부터 시작한다는 발상까지는 도달하였는데, 그 후로 진행을 매끄럽게 못하였다. 정렬부터 깔끔하게 하는 방법을 보자
+```
+def solution(nodeinfo):
+    global node
+    for i in range(len(nodeinfo)):
+        node.append( ( nodeinfo[i][1],nodeinfo[i][0], i+1 ) )
+    node.sort(key=lambda n: (-n[0],n[1]))
+```
+
+이런 식으로 진행하면 문제 풀이에 맞게 깔끔하게 정렬할 수 있다. **lambda** 는 이름 없는 간단한 함수를 뜻하는데, 아래 두 표현은 동치라고 할 수 있다.
+```
+def get_key(n):
+    return (-n[0], n[1])
+
+lambda n: (-n[0], n[1])
+```
+
+sort의 **key 파라미터** 는 `이 기준으로 정렬해라`라는 뜻으로, (-n[0],n[1]) 꼴의 비교 함수를 넣어주면 
+1. 첫번째 인자는 내림차순
+2. 두번째 인자는 오름차순
+
+으로 저절로 정렬이 된다. -n[0]은 뒤집었을 때 가장 작은 값 순서대로 오름차순이니 내림차순.. 이라고 생각하면 될 거 같다.
+
+이제 재귀 함수를 돌면서 트리를 구성해주면 되는데, 본인은 백트래킹을 통해 트리를 구성해야 한다고 생각했으나, 사실 y, x 순으로 정렬된 노드들을 순서대로 처리하면 결정적으로 트리를 만들어낼 수 있다. 트리 문제가 낯설어서 생각이 부족했던 것 같다. 어떤 노드가 들어올 때 루트부터 오른쪽, 왼쪽을 타고 내려간다고 생각하면 편하다. 트리를 만들어준 다음 순회를 구현하면 된다.
+
+```
+import sys
+sys.setrecursionlimit(10**6)
+
+node = list()
+left = list()
+right = list()
+
+def front(indx):
+    global node
+    global left
+    global right
+    
+    answer = list()
+    answer.append(node[indx][2])
+    
+    l = left[indx]
+    r = right[indx]
+    
+    if l != 0:
+        answer += front(l)
+    if r != 0:
+        answer += front(r)
+    return answer
+
+def back(indx):
+    global node
+    global left
+    global right
+    
+    answer = list()
+    
+    l = left[indx]
+    r = right[indx]
+    
+    if l != 0:
+        answer += back(l)
+    if r != 0:
+        answer += back(r)
+    answer.append(node[indx][2])
+    return answer
+
+def build_tree(indx, cur):
+    global node
+    global left
+    global right
+    
+    x = node[indx][1]
+    x_cur = node[cur][1]
+    
+    if x < x_cur:
+        if left[cur] == 0:
+            left[cur] = indx
+            return
+        else:
+            build_tree(indx, left[cur])
+            return
+    else:
+        if right[cur] == 0:
+            right[cur] = indx
+            return
+        else:
+            build_tree(indx, right[cur])
+            return
+            
+def solution(nodeinfo):
+    global node
+    global left
+    global right
+    for i in range(len(nodeinfo)):
+        node.append((nodeinfo[i][1], nodeinfo[i][0], i + 1 ))
+    node.sort(key=(lambda n: (-n[0],n[1])))
+    
+    root = node[0][2]
+    
+    for i in range(len(nodeinfo)):
+        left.append(0)
+        right.append(0)
+        
+    for i in range(1, len(node)):
+        build_tree(i, 0)
+                       
+    ans1 = front(0)
+    ans2 = back(0)
+    
+    return [ans1, ans2]
+```
+- 전위: Root -> Left -> Right
+- 중위: Left -> Root -> Right
+- 후위: Left -> Right -> Root
+
+이 순서를 기억하자.. 
+
+그리고 재귀 깊이가 부족할 수 있으니 재귀 함수를 사용할 때 **깊이를 늘려주는 것** 을 항상 기억하자
+```
+import sys
+sys.setrecursionlimit(10**6)
+```
