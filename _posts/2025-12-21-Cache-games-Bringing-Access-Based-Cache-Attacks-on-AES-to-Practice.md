@@ -29,7 +29,7 @@ math: true
 4. 128비트 AES에 대한 공격을 완전하게 구현했으며, 실시간으로 키 복구가 가능할 정도로 효율적입니다.
 5. 공격의 핵심은 victim 프로세스의 모든 단일 메모리 접근을 평균적으로 관찰할 수 있는 **스파이 프로세스** 입니다. 캐시 히트와 미스에 대한 높은 관찰 정밀도는 리눅스 커널의 **Completely Fair Scheduler** 의 동작을 악용하는 새로운 기법을 통해 달성됩니다. 
 
-## Preliminariesc
+## Preliminaries
 먼저 CPU 캐시의 동작을 간단하게 정리하고, AES의 구현에 대해 설명합니다.
 
 ### The CPU Cache and its Side Channels
