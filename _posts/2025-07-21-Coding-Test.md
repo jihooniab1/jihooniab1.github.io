@@ -922,3 +922,51 @@ def solution(nodeinfo):
 import sys
 sys.setrecursionlimit(10**6)
 ```
+
+### 리코쳇 로봇 (Lv 2, bfs)
+https://school.programmers.co.kr/learn/courses/30/lessons/169199
+어렵지 않은 문제인데 너무 복잡하게 생각했던 것 같다. 그래프를 주면서 최단 시간, 횟수 같은 걸 구하는 문제는 일단 bfs가 적용되는지 더 엄밀하게 고민을 해보아야 할 것 같다. 무한 루프 조건을 생각하다가 풀이가 이상한대로 흐른 거 같은데, 사실 bfs 큐를 다 털었는데도 도착을 못했으면 그게 도달 불가능을 의미하는 것이긴 하다. bfs를 쓰기 위해 deque을 가져오자
+
+```
+from collections import deque
+```
+
+그리고 미끄러지는 로직을 바로 떠올리지 못했는데, 상식적으로 반복문을 짜면 됐었다.
+```
+while len(queue) > 0:
+    cur = queue.popleft()
+
+    for d in range(4):
+        nx, ny = cur[0], cur[1]
+    
+        while True:
+            tx = nx + dx[d]
+            ty = ny + dy[d]
+            if tx < 0 or ty < 0 or tx >= len(board) or ty >= len(board[0]):
+                break
+            if board[tx][ty] == 'D':
+                break
+            nx, ny = tx, ty
+```
+
+나머지는 일반 bfs 문제와 동일하다.
+
+### 이모티콘 할인 행사 (Lv 2, 부동소수점)
+https://school.programmers.co.kr/learn/courses/30/lessons/150368
+
+어렵지 않은 문제였는데 왜 안 풀리는지 이해를 못하고 있었다. 함수도 이상하게 짰지만 제일 큰 문제는 부동소수점이었다. 아무리 int() 함수를 씌운다고 해도 **소숫점 달린 숫자를 곱하는 것은 절대 금지** 라는 것을 기억하자
+
+```
+int(tmp_price * 0.6)
+```
+
+이게 아니라
+
+```
+(tmp_price * 60) // 100
+```
+
+이게 확실하다.
+
+그리고 항상 문제를 풀 때 global 키워드로 코드를 지저분하게 짰었는데, 함수 안에 재귀 함수를 만드는 방식으로 훨씬 깔끔하게 풀 수 있을 거 같다. 
+
