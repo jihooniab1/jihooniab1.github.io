@@ -998,5 +998,77 @@ hq[max(hq)]
 
 이 경우에는 BFS를 쓸 수 있는지 항상 먼저 고민을 해보자 
 
-### 양과 늑대 (Lv 3, dfs)
+### 양과 늑대 (Lv 3, brute force)
 노드의 개수가 굉장히 작다는 것에서 브루트포스를 써도 되겠다는 생각까지는 떠올렸는데 구체적인 로직을 생각해내지 못하였다. 
+
+이 문제의 핵심은 **상태 관리** 와 **완전 탐색** 이다. `양의 수가 늑대의 수보다 많다`라는 조건을 유지하면서 브루트 포스를 해야 하는데, 너무 어렵게 생각할 필요 없이 어떤 노드를 방문하면 그 노드의 자식 노드를 전부 후보군에 넣어주면 된다. 
+
+그리고 문제를 풀 때 트리나 그래프 형태의 입력이 주어지면 기계적으로 **인접 리스트** 의 형태로 만들어두는 것도 좋을 것 같다. 이 문제는 단방향 트리이므로 다음과 같이 graph를 구성해주면 쉽게 자식노드를 구할 수 있다.
+```
+graph = [[] for _ in range(n)]
+for u, v in edges:
+    graph[u].append(v)
+```
+
+또한 bfs는 이런 문제가 덜 한거 같은데, dfs나 완전탐색 문제를 풀면서 반복문을 사용할 때 candidate 같은 **리스트의 원본을 오염시키면 안된다** 는 것을 배웠다. 이런 식으로 완전 탐색을 위해 리스트의 원소 하나를 현재 노드로 취급하고 다음 함수를 호출하려면 꼭 **copy()** 메서드를 사용해야 할 것 같다.
+
+```
+answer = 0
+def solution(info, edges):
+    graph = [[] for _ in range(len(info))]
+    for u, v in edges:
+        graph[u].append(v)
+    
+    def dfs(sheep, wolf, candidate):
+        global answer
+        answer = max(answer, sheep)
+        
+        for i in range(len(candidate)):
+            cur = candidate[i]
+            new_candidate = candidate.copy()
+            new_candidate.remove(cur)
+            new_candidate += graph[cur]
+            
+            if info[cur] == 0:
+                dfs(sheep+1, wolf, new_candidate)
+            elif sheep > wolf + 1:
+                dfs(sheep, wolf+1, new_candidate)
+    global answer
+    
+    dfs(1, 0, graph[0])
+    return answer
+```
+
+### 올바른 괄호의 갯수 (Lv 4, dp)
+중복 없이 케이스를 잘 분류하는 것이 핵심인 문제이다. 대충 f()를 재귀적으로 정의해서 푸는 컨셉인 거 같기는 했는데, 어떻게 정의해야 할지 자세하게 정하지를 못하였다.
+
+괄호 쌍이 5개일 때 
+1. () * (괄호쌍 4개)
+2. (1쌍) * (괄호쌍 3개)
+3. (2쌍) * (괄호쌍 2개)
+4. (3쌍) * (괄호쌍 1개)
+5. (4쌍) * 1
+
+이런 식으로 나누면 중복없이 계산할 수 있다. **첫 번째 원소를 기준으로 나머지를 재귀적으로 분류** 하는 문제였다. 
+```
+def solution(n):
+    
+    def f(num):
+        if num == 0 or num == 1:
+            return 1
+        elif num == 2:
+            return 2
+        elif num == 3:
+            return 5
+        
+        ans = 0
+        
+        for i in range(num):
+            c1 = f(i)
+            c2 = f(num - i - 1)
+            
+            ans += c1 * c2
+        
+        return ans
+    return f(n)
+```
