@@ -310,7 +310,9 @@ kafl fuzz \
     --qemu-extra="-drive if=pflash,format=raw,readonly=on,file=$HOME/OSVS/kafl/OVMF_CODE.fd -drive if=pflash,format=raw,file=$HOME/OSVS/kafl/OVMF_VARS.fd"
 ```
 
-퍼징 수행 화면은 대충 다음과 같습니다. <br>
-
+퍼징 수행 화면은 대충 다음과 같습니다. stat을 보려면 다음 커맨드를 입력하면 됩니다.
+```
+kafl gui -w /tmp/kafl_test
+```
+-
 ![k6](/assets/img/posts/Study/kafl_6.png) <br>
-
