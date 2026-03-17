@@ -293,6 +293,23 @@ counter = Counter(['red','blue','green','red'])
 print(counter['green']) # 1
 ```
 
+## C/C++ 기본
+```c
+#include <iostream>
+#include <string>
+#include <vector>
+#include <algorithm>
+
+using namespace std;
+
+int main(){
+    ios::sync_with_stdio(false);
+    cin.tie(NULL);
+
+    return 0;
+}
+```
+
 ## 백준
 ### 배열
 #### 3273 두 수의 합
