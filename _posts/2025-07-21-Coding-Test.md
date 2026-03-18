@@ -293,6 +293,24 @@ counter = Counter(['red','blue','green','red'])
 print(counter['green']) # 1
 ```
 
+## C/C++ 기본
+```c
+#include <iostream>
+#include <string>
+#include <vector>
+#include <algorithm>
+
+using namespace std;
+
+int main(){
+    ios::sync_with_stdio(false);
+    cin.tie(NULL);
+
+    return 0;
+}
+```
+그리고 문자열은 대부분 c++에서 `string` 클래스만 사용할거라 문자열 길이를 구할 때는 **size()** 메서드를 사용하면 된다.
+
 ## 백준
 ### 배열
 #### 3273 두 수의 합
