@@ -14,12 +14,12 @@ timezone: Asia/Seoul
 # jekyll-seo-tag settings › https://github.com/jekyll/jekyll-seo-tag/blob/master/docs/usage.md
 # ↓ --------------------------
 
-title: 지후니 블로그
+title: 쉬었음 청년 블로그
 
 tagline: 보안 공부 기록하는 곳
 
 description: >- # used by seo meta and the atom feed
-  머리가 안 좋아서 공부한 내용들을 최대한 적어둬야 하는 블로그입니다.
+  공부한 내용들을 적어두는 블로그입니다. 많은 분들에게 도움이 되었음 좋겠어요
 
 # Fill in the protocol & hostname for your site.
 # E.g. 'https://username.github.io', note that it does not end with a '/'.
@@ -98,7 +98,7 @@ theme_mode: light # [light | dark]
 cdn:
 
 # the avatar on sidebar, support local or CORS resources
-avatar: /assets/img/kjh.jpg
+avatar: /assets/img/blog.jpg
 
 # The URL of the site-wide social preview image used in SEO `og:image` meta tag.
 # It can be overridden by a customized `page.image` in front matter.
