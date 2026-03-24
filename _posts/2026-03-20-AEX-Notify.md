@@ -1,6 +1,6 @@
 ---
 title: "AEX-Notify: Thwarting Precise Single-Stepping Attacks through Interrupt Awareness for Intel SGX Enclaves"
-date: 2026-03-13 00:00:00 +0900
+date: 2026-03-20 00:00:00 +0900
 categories: [Papers]
 tags: [security, side channel, TEE]
 permalink: /posts/AEX-Notify/
