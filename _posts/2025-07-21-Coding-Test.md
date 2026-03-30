@@ -2,7 +2,7 @@
 title: "코딩 테스트 준비"
 date: 2025-07-21 00:00:00 +0900
 categories: [Study]
-tags: [algorithm]
+tags: [취준]
 permalink: /posts/Coding-Test/
 ---
 ## 파이썬 기초 문법
@@ -1132,4 +1132,72 @@ def solution(n, money):
 ```
 
 호출되는 함수의 수가 너무 커지는 거 같으면, 재귀 함수보다는 DP쪽으로 생각을 돌리는게 좋을 것 같다. 시간 초과가 높은 확률로 발생한다. 
+
+### 구명보트 (Lv 2, 그리디, 투포인터)
+사고를 유연하게 하지 못해 바로 떠올리지 못한 것 같다. 
+
+핵심은 **가장 가벼운 사람과도 같이 못 타면 무조건 혼자 타야한다** 인 것 같다.
+
+투포인터로 가장 가벼운 사람과 가장 무거운 사람부터 가리키게 한 후, 혼자 타는 경우는 무조건 1 카운트로 빼고, 짝이 지어지면 바로바로 카운트로 빼주면 된다. 
+
+```
+def solution(people, limit):
+    people.sort()
+    answer = 0
+    
+    l = 0
+    r = len(people) - 1
+    
+    while l < r:
+        if people[l] + people[r] > limit:
+            print(people[r])
+            answer += 1
+            r -= 1
+        else:
+            print(people[l],end=' ')
+            print(people[r])
+            answer += 1
+            l += 1
+            r -= 1
+    if l == r:
+        answer += 1
+    return answer
+```
+
+### 귤 고르기 (Lv 2, 딕셔너리)
+문제는 쉬웠는데, 그걸 구현하는 과정에서 어려움을 겪었다.
+
+먼저 새로 배운건 **Counter** 이다. 리스트를 입력으로 주면 빈도수를 자동으로 체크해주는 일종의 딕셔너리의 하위 클래스이다.
+
+```
+from collections import Counter
+
+res = Counter(list)
+res.items() # 이렇게 값을 튜플들로 뽑아낼 수도 있다.
+```
+
+그리고 보통 리스트를 정렬할 때 `sort()` 메서드를 사용하지만, 리스트가 아닌 다른 타입에는 이 메서드가 없다. 이럴 때는 **sorted()** 함수를 써서 정렬해줄 수 있다.
+
+위에서도 한번 다뤘지만 `key=lambda x: x[1]` 을 이용하여 정렬 기준도 정할 수 있다. 
+
+```
+from collections import Counter
+
+def solution(k, tangerine):
+    answer = 0
+    
+    arr = Counter(tangerine).items()
+    
+    res = sorted(arr, key=lambda x: x[1], reverse=True)
+    
+    cnt = 0
+    i = 0
+    
+    while cnt < k:
+        answer += 1
+        cnt += res[i][1]
+        i += 1
+    
+    return answer
+```
 
