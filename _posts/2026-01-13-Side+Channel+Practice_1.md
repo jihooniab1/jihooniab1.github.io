@@ -1,13 +1,13 @@
 ---
-title: "Side Channel Practice"
+title: "Side Channel Practice_FLUSH+RELOAD"
 date: 2026-01-13 00:00:00 +0900
 categories: [Study]
 tags: [security, side channel]
-permalink: /posts/Side+Channel+Practice/
+permalink: /posts/Side+Channel+Practice_1/
 math: true
 ---
 
-# 사이드 채널 실습
+# 사이드 채널 실습 - FLUSH+RELOAD
 
 ## Cache
 캐시는 더 크고 느린 저장 장치에 있는 **데이터의 일부를 임시로 보관** 하는, 더 작고 빠른 저장 장치입니다. 소프트웨어에게는 보이지 않으며, `load/store` 명령에 반응하여 하드웨어가 알아서 관리합니다. 
