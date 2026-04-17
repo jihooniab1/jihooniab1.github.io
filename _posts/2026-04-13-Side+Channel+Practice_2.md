@@ -62,6 +62,175 @@ total 223284
 
 `dpkg-source -x` 명령을 사용하면 내부적으로 .dsc 파일을 읽은 후 orig 파일을 풀어서 베이스 소스 트리를 만들고 그 위에 diff.gz 패치를 적용합니다. 
 
+### 커널에 새롭게 추가된 코드들
+#### include/linux/tdx_step_gate_desc.h
+IDT를 직접 조작하기 위한 로우 레벨 타입 정의들을 담고 있습니다.
+```c
+/* IA-64: 16-byte gate (from Linux kernel arch/x86/include/asm/desc_defs.h) */
+typedef struct {
+    uint16_t offset_low;
+    uint16_t segment;
+    unsigned ist : 3, zero0 : 5, type : 5, dpl : 2, p : 1;
+    uint16_t offset_middle;
+    uint32_t offset_high;
+    uint32_t zero1;
+} __attribute__((packed)) gate_desc_t;
+
+#define PTR_LOW(x) ((unsigned long long)(x) & 0xFFFF)
+#define PTR_MIDDLE(x) (((unsigned long long)(x) >> 16) & 0xFFFF)
+#define PTR_HIGH(x) ((unsigned long long)(x) >> 32)
+
+#define gate_offset(g) ((g)->offset_low | ((unsigned long)(g)->offset_middle << 16) | ((unsigned long)(g)->offset_high << 32))
+#define gate_ptr(base, idx) ((gate_desc_t*) (((void*) base) + idx*sizeof(gate_desc_t)))
+```
+x86-64 IDT의 16바이트 게이트 디스크립터를 그대로 표현하고 있습니다. IDT는 **Interrupt Descriptor Table** 의 약자로 인터럽트나 예외가 발생했을 때 어떤 핸들러 함수를 실행할지 저장해둔 테이블입니다. 테이블의 각 엔트리가 핸들러 함수 주소를 담고 있고, 각 엔트리가 `gate_desc_t` 하나입니다. 핸들러 주소가 `offset_low + offset_middle + offset_high` 세 부분으로 나뉘어져 있습니다. 주소 조립/분해용 매크로가 아래에 존재하는 것을 볼 수 있습니다. `install_kernel_irq_hanlder()` 함수에서 **isr_wrapper** 함수 주소를 이 세 필드에 분해해서 사용합니다.
+
+```c
+#define KERNEL_DPL          0
+#define USER_DPL            3
+#define GDT_ENTRY_USER_CS   6
+#define GDT_ENTRY_KERNEL_CS 2
+
+typedef enum {
+    KERNEL_CS = GDT_ENTRY_KERNEL_CS*8+KERNEL_DPL,
+    USER_CS   = GDT_ENTRY_USER_CS*8+USER_DPL,
+} cs_t;
+```
+핸드러를 커널 권한(Ring 0)으로 설치하기 위한 상수들로, `gate_desc_t.segment`에 **KERNEL_CS**, `gate_desc_t.dpl`에 **KERNEL_DPL** 을 넣으면 커널 수준 인터럽트 핸들러가 됩니다. 
+
+```c
+typedef struct {
+    uint16_t size;
+    uint64_t base;
+} __attribute__((packed)) dtr_t;
+```
+`SIDT` 명령어 결과(IDTR 레지스터)를 받는 메모리 레이아웃이라 `__attribute__((packed))__`가 필수입니다. 
+
+#### include/linux/tdx_step.h
+```c
+typedef struct {
+    //모니터링 대상
+	uint64_t *target_vaddrs;         // 측정할 가상 주소 배열
+	uint64_t target_vaddrs_len;      // 배열 길이
+	uint64_t offset_in_target_vaddr; // 페이지 내 오프셋
+
+	// 캐시 미스 임계값
+	uint64_t miss_thresh;
+
+    // 스레드 간 동기화
+	int status; // 0=실행중, 1=종료요청, 2=종료됨, 3=메모리 동기화 요청
+	spinlock_t status_lock;
+
+	void *dummy_page;
+
+	// 측정 결과
+	uint64_t lowest_diff;      // 최소 접근 시간
+	uint64_t highest_diff;     // 최대 접근 시간
+	uint64_t hit_counter;      // 캐시 히트 횟수
+	uint64_t total_iterations; 
+	uint64_t *timings;         // 타이밍 기록 배열
+	uint64_t timings_len;
+} fr_monitor_thread_ctx_t;
+```
+fr은 Flush+Reload 공격을 의미하며, `fr_monitor_thread_ctx_t`는 **STUMBLE_STEP** 공격에서 별개의 쓰레드가 캐시 모니터링을 할 때 쓰는 컨텍스트 구조체입니다. 
+
+```c
+typedef struct {
+    gate_desc_t *base;
+    size_t     entries;
+} idt_t;
+
+typedef struct {
+    uint32_t lvtt;
+    uint32_t tdcr;
+    uint32_t tmict;
+} apic_backup_t;
+```
+`idt_t`는 IDT 테이블의 시작 주소를 나타내고, `apic_backup_t`는 APIC 타이머의 **lvtt(타이머 모드)**, **tdcr(분주비)**, **tmict(카운터 초기값)** 세 레지스터를 저장해두었다가 공격 후 복원하는 용도입니다. 
+
+```c
+typedef enum {
+	AS_INACTIVE,
+	//Waiting for attack configuration to be applied
+	AS_SETUP_PENDING,
+	//wait for pagefault on target gpa
+	AS_WAITING_FOR_TARGET,
+	//Single step until we get parge fault for done marker
+	AS_WAITING_FOR_DONE_MARKER,
+	//We got our target and are now waiting for the end of the sequence
+	AS_WAITING_FOR_END_OF_SEQ,
+	//We got an unexpected access during AS_WAITING_FOR_DONE_MARKER and are now waiting for a trigger to return to that state
+	AS_WAITING_FOR_REENTER,
+	//Waiting for single step configuration to be cleared
+	AS_TEARDOWN_PENDING,
+	AS_MAX,
+} attack_state_t;
+```
+공격 전체 진행 상태를 나타내는 enum입니다. 상태 머신의 각 단계를 의미합니다.
+
+```c
+#define TDX_STEP_SHARED_SIGBUF_PAGES 256
+```
+FREQ_SNEAK 모드 전용으로, TD가 연산 결과를 호스트와 공유하기 위한 메모리 채널을 만들 때 사용하는 상수입니다.
+
+`attack_cfg_t` 구조체는 공격의 전체 생애주기를 관리하는 구조체입니다.
+```c
+typedef struct {
+
+	//
+	// Stumble Step Specific
+	//
+
+	//store cache hit results. Has len `want_attack_iterations`
+	uint64_t* stumble_step_hit_counter_data;
+	//store tdexit count results. Has len `want_attack_iterations`
+	uint64_t* stumble_step_exit_count_data;
+```
+StumbleStepping 공격에서 **iteration별 Flush+Reload 히트 횟수**, **iteration별 TDEXIT 횟수** 를 `의미합니다.
+
+```c
+	//
+	// Freq Sneak Specific
+	//
+
+	//max number of elements that we can store for a single iteration (i.e. an inner array in freq_sneak_events_by_iteration)
+	uint64_t freq_sneak_iteration_max_entries;
+	//each entry holds the next free idx. In the end, we have the actual length
+	uint64_t* freq_sneak_events_by_iteration_next_idx;
+	//2D array with one inner array per iteration
+	freq_sneak_event_t** freq_sneak_events_by_iteration;
+
+	uint64_t shared_sigbuf_gpa;
+	struct page* pinned_page_shared_sigbuf[TDX_STEP_SHARED_SIGBUF_PAGES];
+    uint8_t* mapping_shared_sigbuf; 
+```
+
+
+#### arch/x86/kvm/tdx_step.c
+
+### 커널 패치
+#### arch/x86/virt/vmx/tdx/tdxcall.S
+
+#### arch/x86/virt/vmx/tdx/seamcall.S
+
+#### arch/x86/kvm/vmx/tdx.c
+
+#### arch/x86/kvm/mmu/tdp_mmu.c
+
+#### arch/x86/kvm/mmu/mmu.c
+
+#### arch/x86/kvm/x86.c
+
+#### arch/x86/mm/pat/set_memory.c
+
+#### include/uapi/linux/kvm.h
+
+#### virt/kvm/kvm_main.c
+
+#### arch/x86/include/asm/tdx.h
+
+#### drivers/virt/coco/tdx-guest/tdx-guest.c
+
 ### our-attack-tools
 
 ### our-kernel-patches
@@ -511,27 +680,4 @@ mv ${TMP_GUEST_IMG_PATH} ${GUEST_IMG_PATH}
 chmod a+rw ${GUEST_IMG_PATH}
 
 ok "TDX guest image : ${GUEST_IMG_PATH}"
-```
-
-그 후에 TDX 1.0 버전에 맞는 QEMU를 빌드해주겠습니다. 
-
-```
-git clone https://git.launchpad.net/~kobuk-team/ubuntu/+source/qemu -b tdx
-cd qemu
-git checkout v1.0
-
-export QUILT_PATCHES=debian/patches
-quilt push -a
-
-cp /usr/share/seabios/*.bin pc-bios/
-cp -r /usr/share/qemu/* pc-bios/
-cp /usr/lib/ipxe/qemu/* pc-bios/
-
-mkdir -p build && cd build
-../configure --prefix=$(readlink -f ../install) \
-    --target-list=x86_64-softmmu \
-    --enable-kvm \
-    --enable-slirp \
-    --disable-docs
-
 ```
