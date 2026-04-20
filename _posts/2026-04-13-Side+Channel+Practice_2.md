@@ -171,9 +171,9 @@ typedef enum {
 ```c
 #define TDX_STEP_SHARED_SIGBUF_PAGES 256
 ```
-FREQ_SNEAK 모드 전용으로, TD가 연산 결과를 호스트와 공유하기 위한 메모리 채널을 만들 때 사용하는 상수입니다.
+FREQ_SNEAK 모드(single-step으로 추정됨) 전용으로, TD가 연산 결과를 호스트와 공유하기 위한 메모리 채널을 만들 때 사용하는 상수입니다.
 
-`attack_cfg_t` 구조체는 공격의 전체 생애주기를 관리하는 구조체입니다.
+`attack_cfg_t` 구조체는 공격의 전체 생애주기를 관리하는 **중앙 제어 및 상태 저장 구조체** 입니다.
 ```c
 typedef struct {
 
@@ -203,6 +203,72 @@ StumbleStepping 공격에서 **iteration별 Flush+Reload 히트 횟수**, **iter
 	uint64_t shared_sigbuf_gpa;
 	struct page* pinned_page_shared_sigbuf[TDX_STEP_SHARED_SIGBUF_PAGES];
     uint8_t* mapping_shared_sigbuf; 
+```
+**freq_sneak_event_t** 는 TDEXIT 한 번마다 생성되는 측정 레코드로, kvm.h에 정의되어 있습니다. **freq_sneak_events_by_iteration** 배열은 2차원 배열 구조로, victim을 한번 실행시키면서 관측한 각 iteration에 대한 기록들을 저장합니다. 아래 변수들은 신호 전달에 사용하는 공유 메모리 버퍼와 관련된 변수들입니다.
+
+```c
+    //if true, do the page tracking and the apic timer setup/teardown but not the actual apic timer programming
+	bool debug_mode;
+
+	//one attack == one `target_trigger_sequence` cycle. This tracks the number of cycles
+	uint64_t current_attack_iteration_idx;
+	uint64_t want_attack_iterations;
+
+	uint64_t target_gpa;
+	//tracking sequence to stop at the desired execution of target_gpa
+	uint64_t* target_trigger_sequence; //TODO: rename to something like "program model"
+	uint64_t target_trigger_sequence_len;
+```
+`debug_mode`는 테스트 용도이고, 다음 두 변수는 **전체 공격 시도 횟수** 를 관리합니다. 나머지 부분은 트리거 시퀀스를 관리하는 부분으로 `target_gpa`는 싱글 스테핑 공격을 시작하고 싶은 최종 목적지 주소, `target_trigger_sequence`는 특정 메모리 페이지들에 접근하는 순서를 이용하여 공격 타이밍을 잡을 때 사용됩니다. 
+
+```c
+    //entry from target_trigger_sequence that is currently tracked. Only valid while in AS_WAITING_FOR_TARGET state
+	uint64_t tts_idx;
+	//position in `target_trigger_sequence` at which we want to launch our attack
+	uint64_t tts_attack_pos;
+
+	uint64_t* attack_phase_allowed_gpas;
+	uint64_t attack_phase_allowed_gpas_len;
+
+	uint64_t done_marker_gpa;
+	attack_state_t state;
+	uint64_t *ignored_gpas;
+	uint64_t ignored_gpas_len;
+```
+`tts_attack_pos`는 `tts_idx`가 특정 값에 도달했을 때 **AS_WAITING_FOR_DONE_MARKER** 로 전환되어 싱글 스테핑을 시작하는 값입니다. `attack_phase_allowed_gpas`는 접근이 허용되는 GAP 목록이고, `done_marker_gpa`는 iteration의 종료 지점을 나타냅니다. `ignored_gpas`는 무시할 GPA 목록입니다.
+
+```c
+    //used to track unrelated faults during the AS_WAITING_FOR_DONE_MARKER state
+	uint64_t unrelated_faults[30];
+	//actually used length of "unrelated_faults" in the last attack run
+	uint64_t unrelated_faults_used_len;
+```
+공격이 진행되는 동안 **예상치 못한 노이즈** 를 기록하고 분석하기 위한 레코더입니다. allow gpas 이외의 곳에서 발생한 페이지 폴트 주소들을 기록하여 iteration의 신뢰도를 결정합니다. 
+
+```c
+	//True if most recent TD GPA fault was due to instruction fetch
+	bool last_fault_exec;
+	//True if most recent TD GPA fault was due to write
+	bool last_fault_write;
+	// True if most recent TD GPA fault was due to read
+	bool last_fault_read;
+
+	//timetamp in nano seconds. Used to compute required time for attack.
+	uint64_t start_time;
+
+	//sequential counter used to give event a unique id
+	uint64_t event_id;
+} attack_cfg_t;
+```
+`last_*` 변수들은 가장 최근에 발생한 페이지 폴트의 원인(rwx)을 저장합니다. `start_time`이랑 `event_id`는 각각 걸리는 시간 분석을 위해 사용하거나 이벤트 고유 식별자를 나타냅니다. 
+
+`tdx_step_config_t`는 공격 전체를 담는 최상위 구조체로, 전역 변수의 형태로 하나만 존재합니다. 내부에 attack_cfg_t가 선언되어 있는 것을 볼 수 있습니다.
+```c
+typedef struct {
+    uint32_t timer_value;
+    uint64_t entries_since_stepping_attack;
+    //number of entries during the active attack phase
+	uint64_t entries_while_active_stepping_attack;
 ```
 
 
