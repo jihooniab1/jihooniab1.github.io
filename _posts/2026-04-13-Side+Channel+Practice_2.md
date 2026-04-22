@@ -578,11 +578,11 @@ isr_wrapper:
 인터럽트 핸들러는 레지스터를 사용하기 때문에 모두 저장해두었다가 보존해야 `iretq` 후 원래 실행 흐름이 깨지지 않습니다. 
 
 ### 커널 패치
+#### arch/x86/kvm/vmx/tdx.c
+
 #### arch/x86/virt/vmx/tdx/tdxcall.S
 
 #### arch/x86/virt/vmx/tdx/seamcall.S
-
-#### arch/x86/kvm/vmx/tdx.c
 
 #### arch/x86/kvm/mmu/tdp_mmu.c
 
