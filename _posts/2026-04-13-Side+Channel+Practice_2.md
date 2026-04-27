@@ -579,6 +579,46 @@ isr_wrapper:
 
 ### 커널 패치
 #### arch/x86/kvm/vmx/tdx.c
+```c
+static void tdx_track(struct kvm_tdx *kvm_tdx); //forward declaration
+```
+공격 코드 뒤에 선언 되어 있는 `tdx_track` 함수를 전방 선언하고 있습니다. 이 함수는 **TD 전용 메모리의 TLB shootdown을 하드웨어 수준에서 확실하게 수행하는** 로직을 구현한 함수입니다. 메모리 접근에 대한 블락 처리를 하더라도 새로 발생하는 page table walk에 대해서만 적용이 되기 때문에, 다른 vcpu의 TLB에 메모리 변환 정보가 남아있으면 블락이 되어 있어도 접근을 할 수 있게 됩니다. 그렇기에 global Epoch 값을 올려 메모리 버전이 바뀌었음을 알리고 IPI를 통해 다른 vCPU들에게 신호를 보내 TLB 일관성을 맞춥니다.
+
+```c
+/**
+ * @brief unblocks gfn. If "is_gfn_blocked" is not null, the status of the gfn is updated accordingly
+ * @return true if successful
+*/
+bool my_tdx_sept_unzap_private_spte(struct kvm *kvm, gfn_t gfn,
+				    enum pg_level level, bool ignore_sept_free)
+{
+	int tdx_level = pg_level_to_tdx_sept_level(level);
+	struct kvm_tdx *kvm_tdx = to_kvm_tdx(kvm);
+	gpa_t gpa = gfn_to_gpa(gfn);
+	struct tdx_module_args out;
+	u64 err;
+	union tdx_ex_ret ex;
+
+	tdx_track(kvm_tdx);
+
+	err = tdh_mem_range_unblock(kvm_tdx->tdr_pa, gpa, tdx_level, &out);
+	ex.regs = out;
+
+	// print error, unless it is  SEPT_FREE. see "tdx_spte_entry_state" for definitions
+	if (err && ((ex.sept_walk.state != 0) || !ignore_sept_free) ){
+		//printk("%s gfn=0x%llx, level=%d\n", __FUNCTION__, gfn, level);
+		//pr_tdx_error(TDH_MEM_RANGE_UNBLOCK, err, &out);
+		return false;
+	} else {
+		if ((is_gfn_blocked != NULL) &&
+		    (gfn <= max_gfn_is_gfn_blocked)) {
+			is_gfn_blocked[gfn] = 0;
+		}
+		return true;
+	}
+}
+```
+`pg_level_to_tdx_sept_level` 함수는 linux 커널 표준 페이지 테이블 레벨(1-4)을 Intel TDX 모듈 전용 레벨(0-3)로 변환해주는 매핑 함수로 실제 함수 구현에서는 `- 1`을 하여 반환하고 있습니다. `to_kvm_tdx`는 kvm 구조체(가상 머신 전체를 관리)를 인자로 받아 **TDX 전용 가상 머신 구조체(kvm_tdx)로 변환** 하는 함수입니다. to_tdx 함수가 개별 CPU 단위를 변환한다면 **to_kvm_tdx는 VM 전체 단위** 를 변환합니다. `gfn_to_gpa` 함수는 게스트 페이지 번호를 게스트 물리 주소(GPA)로 변환하는 함수로, `<< 12` 연산을 합니다. `struct tdx_module args out`은 하드웨어 명령(SEAMCALL)을 내린 후, 레지스터에 담겨 돌아오는 결과물을 저장하기 위한 구조체입니다. TDX 메모리 관리 방식에 따라 
 
 #### arch/x86/virt/vmx/tdx/tdxcall.S
 
