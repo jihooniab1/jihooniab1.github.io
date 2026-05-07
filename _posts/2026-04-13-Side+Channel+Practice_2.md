@@ -165,7 +165,7 @@ typedef struct {
 
 ### 저수준 SEMCALL / 어셈블리
 #### arch/x86/virt/vmx/tdx
-tdxcall.S는 SEAMCALL/TDCALL을 발사하는 어셈블리 헬퍼입니다. SEAMCALL은 KVM이 TDX 모듈에게 TD 관련 요청을 보낼 때 사용하고, TDCALL은 TD가 게스트 OS의 자원 요청을 TDX 모듈에게 보낼 때 사용합니다. 호스트 커널 스케줄러가 QEMU의 vCPU 스레드를 깨우는 상황을 살펴보겠습니다. QEMU 버전은 8.2.2 코드를 참고하였습니다.
+tdxcall.S는 SEAMCALL/TDCALL을 발사하는 어셈블리 헬퍼입니다. SEAMCALL은 KVM이 TDX 모듈에게 TD 관련 요청을 보낼 때 사용하고, TDCALL은 TD가 게스트 OS의 자원 요청을 TDX 모듈에게 보낼 때 사용합니다. 호스트 커널 스케줄러가 QEMU의 vCPU 스데르를 깨우는 상황을 살펴보겠습니다. QEMU 버전은 8.2.2 코드를 참고하였습니다.
 
 QEMU는 vCPU를 스레드 형태로 관리합니다. 스레드가 스케줄링 되면 vCPU가 CPU를 빌려 실행을 하는 구조라고 생각할 수 있습니다.
 ```c
