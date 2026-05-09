@@ -164,8 +164,8 @@ typedef struct {
 ```
 
 ### 저수준 SEMCALL / 어셈블리
-#### arch/x86/virt/vmx/tdx
-tdxcall.S는 SEAMCALL/TDCALL을 발사하는 어셈블리 헬퍼입니다. SEAMCALL은 KVM이 TDX 모듈에게 TD 관련 요청을 보낼 때 사용하고, TDCALL은 TD가 게스트 OS의 자원 요청을 TDX 모듈에게 보낼 때 사용합니다. 호스트 커널 스케줄러가 QEMU의 vCPU 스데르를 깨우는 상황을 살펴보겠습니다. QEMU 버전은 8.2.2 코드를 참고하였습니다.
+#### arch/x86/virt/vmx/tdxcall.S, KVM 진입 과정
+tdxcall.S는 SEAMCALL/TDCALL을 발사하는 어셈블리 헬퍼입니다. SEAMCALL은 KVM이 TDX 모듈에게 TD 관련 요청을 보낼 때 사용하고, TDCALL은 TD가 게스트 OS의 자원 요청을 TDX 모듈에게 보낼 때 사용합니다. 호스트 커널 스케줄러가 QEMU의 vCPU 스레드를 깨우는 상황을 살펴보겠습니다. QEMU 버전은 8.2.2 코드를 참고하였습니다.
 
 QEMU는 vCPU를 스레드 형태로 관리합니다. 스레드가 스케줄링 되면 vCPU가 CPU를 빌려 실행을 하는 구조라고 생각할 수 있습니다.
 ```c
@@ -208,7 +208,515 @@ static void *kvm_vcpu_thread_fn(void *arg)
 ```
 `kvm_vcpu_thread_fn` 함수는 **QEMU가 vCPU 개수만큼 만든 pthread의 진입 함수** 입니다. 
 
-초반부에는 RCU에 스레드를 등록하고 커널에 vCPU 자료구조를 만든 후 **vCPU 준비됨** 시그널을 생성합니다. 중반의 메인 루프에서는 
+초반부에는 RCU에 스레드를 등록하고 커널에 vCPU 자료구조를 만든 후 **vCPU 준비됨** 시그널을 생성합니다. 중반의 메인 루프에서는 VM이 실행되는 동안 `KVM_RUN`으로 게스트를 실행하고, 시그널과 exit_request를 처리합니다. 후반부는 KVM 자료구조를 해제하는 부분입니다. 
+
+```c
+int kvm_cpu_exec(CPUState *cpu)
+{
+    // 1. Pre-run, kvm_arch_pre_run과 exit_request 체크, 진입 전 마지막 동기화
+    do {
+        MemTxAttrs attrs;
+
+        if (cpu->vcpu_dirty) {
+            ret = kvm_arch_put_registers(cpu, KVM_PUT_RUNTIME_STATE);
+            cpu->vcpu_dirty = false;
+        }
+
+        kvm_arch_pre_run(cpu, run);
+        if (qatomic_read(&cpu->exit_request)) {
+            DPRINTF("interrupt exit requested\n");
+            /*
+             * KVM requires us to reenter the kernel after IO exits to complete
+             * instruction emulation. This self-signal will ensure that we
+             * leave ASAP again.
+             */
+            kvm_cpu_kick_self();
+        }
+
+        /* Read cpu->exit_request before KVM_RUN reads run->immediate_exit.
+         * Matching barrier in kvm_eat_signals.
+         */
+        smp_rmb();
+
+    // 2. KVM_RUN. 이 syscal 안에서 게스트가 실제로 실행됨
+        run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
+
+        attrs = kvm_arch_post_run(cpu, run);
+
+    // 3. exit_reason_switch. ret=0이면 do-while 계속 돌고(다시 KVM_RUN), 아니면 함수 종료
+        switch (run->exit_reason) {
+        case KVM_EXIT_IO:  // PIO emulate
+            DPRINTF("handle_io\n");
+            /* Called outside BQL */
+            kvm_handle_io(run->io.port, attrs,
+                          (uint8_t *)run + run->io.data_offset,
+                          run->io.direction,
+                          run->io.size,
+                          run->io.count);
+            ret = 0;
+            break;
+        case KVM_EXIT_MMIO: // MMIO emulate
+            DPRINTF("handle_mmio\n");
+            /* Called outside BQL */
+            address_space_rw(&address_space_memory,
+                             run->mmio.phys_addr, attrs,
+                             run->mmio.data,
+                             run->mmio.len,
+                             run->mmio.is_write);
+            ret = 0;
+            break;
+        case KVM_EXIT_SHUTDOWN: // 게스트 종료
+            DPRINTF("shutdown\n");
+            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+            ret = EXCP_INTERRUPT;
+            break;
+        case KVM_EXIT_MEMORY_FAULT: // TDX private <-> shared 변환
+            if (run->memory_fault.flags & ~KVM_MEMORY_EXIT_FLAG_PRIVATE) {
+                error_report("KVM_EXIT_MEMORY_FAULT: Unknown flag 0x%" PRIx64,
+                             (uint64_t)run->memory_fault.flags);
+                ret = -1;
+                break;
+            }
+            ret = kvm_convert_memory(run->memory_fault.gpa, run->memory_fault.size,
+                                     run->memory_fault.flags & KVM_MEMORY_EXIT_FLAG_PRIVATE);
+            break;
+        default: // arch 별 처리
+            DPRINTF("kvm_arch_handle_exit\n");
+            ret = kvm_arch_handle_exit(cpu, run);
+            break;
+        }
+    } while (ret == 0);
+```
+위 코드는 `kvm_cpu_exec` 코드를 중요한 부분만 추린 코드입니다. kvm_cpu_exec은 KVM_RUN을 반복 호출하면서 게스트 실행을 끌고가는 함수입니다. `kvm_vcpu_thread_fn` 안에서 호출되며, 하나의 vCPU에 대해 KVM_RUN ioctl을 반복 실행하다가 QEMU 상위 처리(시그널, shutdown, 디버그 등)가 필요할 때만 반환하는 함수입니다. 
+
+```c
+int kvm_vcpu_ioctl(CPUState *cpu, int type, ...)
+{
+    int ret;
+    void *arg;
+    va_list ap;
+
+    va_start(ap, type);
+    arg = va_arg(ap, void *);
+    va_end(ap);
+
+    trace_kvm_vcpu_ioctl(cpu->cpu_index, type, arg);
+    accel_cpu_ioctl_begin(cpu);
+    ret = ioctl(cpu->kvm_fd, type, arg);
+    accel_cpu_ioctl_end(cpu);
+    if (ret == -1) {
+        ret = -errno;
+    }
+    return ret;
+}
+```
+QEMU의 마지막 함수로 이 다음은 커널로 흐름이 넘어갑니다. `kvm_vcpu_ioctl(cpu, KVM_RUN, 0)` 이런 식으로 호출되면 인자를 추출하고 **ioctl(kvm_fd, KVM_RUN, 0)** 을 호출합니다.
+
+```c
+static long kvm_vcpu_ioctl(struct file *filp,
+			   unsigned int ioctl, unsigned long arg)
+{
+    // 1, fd -> vCPU 객체
+	struct kvm_vcpu *vcpu = filp->private_data;
+    
+    // 2. 보안/일관성 검증. 
+    // vcpu->kvm->mm은 VM을 만든 프로세스의 mm_struct. current->mm은 지금 ioctl을 부른 프로세스의 mm_struct. 호출자와 다른 프로세스가 게스트 메모리를 못 보도록 막는 것입니다. 
+    // VM이 정리단계(vm_dead)에 들어갔으면 더 이상 ioctl을 받지 않는다는 의미입니다
+	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
+		return -EIO;
+	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
+		return -EINVAL;
+
+    // 3. vCPU 단위 mutex (한 번에 한 ioctl만 처리)
+	if (mutex_lock_killable(&vcpu->mutex))
+		return -EINTR;
+	switch (ioctl) {
+	case KVM_RUN: {
+		struct pid *oldpid;
+		r = -EINVAL;
+		if (arg)
+			goto out; // arg는 0이여야 합니다
+
+        // 4. pid 변경 체크 (vCPU를 직전에 실행한 호스트 스레드와 지금 호출자가 다르면 호스트-CPU 종속 자료구조를 재셋업)
+		oldpid = rcu_access_pointer(vcpu->pid);
+		if (unlikely(oldpid != task_pid(current))) {
+			/* The thread running this VCPU changed. */
+			struct pid *newpid;
+
+			r = kvm_arch_vcpu_run_pid_change(vcpu);
+			if (r)
+				break;
+
+			newpid = get_task_pid(current, PIDTYPE_PID);ㄴ
+			rcu_assign_pointer(vcpu->pid, newpid);
+			if (oldpid)
+				synchronize_rcu();
+			put_pid(oldpid);
+		}
+
+        // 5. 진짜 실행하는 부분
+		r = kvm_arch_vcpu_ioctl_run(vcpu);
+		trace_kvm_userspace_exit(vcpu->run->exit_reason, r);
+        break;
+    // 나머지 케이스들
+```
+`kvm_vcpu_ioctl` 함수는 QEMU에서 ioctl(vcpu_fd, ...) 호출하면 이를 검증하고, dispatch하는 함수입니다. `KVM_RUN`의 경우 ioctl에 대한 검증을 한 후 **kvm_arch_vcpu_ioctl_run(vcpu)** 함수가 호출됩니다.
+
+```c
+int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
+{
+    // 1. 사전 준비 단계. MMU 초기화를 마무리 하고 vCPU를 현재 CPU에 로드합니다(vcpu_load). 시그널 마스크를 활성화 하고 SRCU read lock을 하는 등, vCPU가 실행될 수 있도록 준비를 합니다.
+	r = kvm_mmu_post_init_vm(vcpu->kvm);
+	if (r)
+		return r;
+
+	vcpu_load(vcpu);
+	kvm_sigset_activate(vcpu);
+	kvm_run->flags = 0;
+	kvm_load_guest_fpu(vcpu);
+
+	kvm_vcpu_srcu_read_lock(vcpu);
+
+    // 2. 진짜 실행(vcpu_run)
+	r = vcpu_run(vcpu);
+
+    // 3. 사후 정리 
+out:
+	kvm_put_guest_fpu(vcpu); // 게스트 FPU 저장, 호스트 FPU 복원 (FPU: Floating Point Unit, CPU 안의 실수 계산 + SIMD 전용 레지스터 세트)
+	if (kvm_run->kvm_valid_regs)
+		store_regs(vcpu); // 게스트 레지스터를 kvm_run->s.regs에 복사
+	post_kvm_run_save(vcpu); // exit 정보 정리, ready_for_interrupt
+	kvm_vcpu_srcu_read_unlock(vcpu);
+
+	kvm_sigset_deactivate(vcpu);
+	vcpu_put(vcpu);  // vCPU 비활성화
+	return r; 
+}
+```
+`kvm_arch_vcpu_ioctl_run`함수는 kvm_vcpu_ioctl이 호출하는 **x86-specific 핸들러** 입니다. **vcpu_run 호출 전후의 게스트 실행 준비/정리** 를 담당하는 함수입니다. 함수 진입 시 vCPU를 현재 호스트 CPU에 활성화한 다음, 특수 케이스를 처리하고 게스트 실행 루프로 들어갑니다. 종료 시에는 게스트 FPU를 저장하고 호스트 FPU를 복원한 후 vCPU를 비활성화합니다.
+
+```c
+/* Called within kvm->srcu read side.  */
+static int vcpu_run(struct kvm_vcpu *vcpu)
+{
+	int r;
+
+	vcpu->run->exit_reason = KVM_EXIT_UNKNOWN;
+	vcpu->arch.l1tf_flush_l1d = true;
+
+	for (;;) {
+		/*
+		 * If another guest vCPU requests a PV TLB flush in the middle
+		 * of instruction emulation, the rest of the emulation could
+		 * use a stale page translation. Assume that any code after
+		 * this point can start executing an instruction.
+		 */
+		vcpu->arch.at_instruction_boundary = false;
+		if (kvm_vcpu_running(vcpu)) {
+			r = vcpu_enter_guest(vcpu);
+		} else {
+			r = vcpu_block(vcpu);
+		}
+
+		if (r <= 0)
+			break;
+
+		kvm_clear_request(KVM_REQ_UNBLOCK, vcpu);
+		if (kvm_xen_has_pending_events(vcpu))
+			kvm_xen_inject_pending_events(vcpu);
+
+		if (kvm_cpu_has_pending_timer(vcpu))
+			kvm_inject_pending_timer_irqs(vcpu);
+
+		if (dm_request_for_irq_injection(vcpu) &&
+			kvm_vcpu_ready_for_interrupt_injection(vcpu)) {
+			r = 0;
+			vcpu->run->exit_reason = KVM_EXIT_IRQ_WINDOW_OPEN;
+			++vcpu->stat.request_irq_exits;
+			break;
+		}
+
+		if (__xfer_to_guest_mode_work_pending()) {
+			kvm_vcpu_srcu_read_unlock(vcpu);
+			r = xfer_to_guest_mode_handle_work(vcpu);
+			kvm_vcpu_srcu_read_lock(vcpu);
+			if (r)
+				return r;
+		}
+	}
+
+	return r;
+}
+```
+`vcpu_run` 함수는 커널 측에서 게스트를 실행하는 루프의 본체를 담당하는 함수입니다. `kvm_vcpu_running` 함수는 **vCPU가 실행 가능한 상태인지** 확인하는 함수로, mp_state(MultiProcessor state)가 RUNNABLE 해야 하고, APF(Async Page Fault)로 정지 상태가 아니여야 true를 반환합니다. vCPU가 실행 가능한 상태일 때 `vcpu_enter_guest`로 게스트를 실행하고 **r <= 0** 인 경우 루프를 빠져나가 userspace 처리(PIO/MMIO/SHUTDOWN)나 에러 처리를 수행합니다. `r > 0`이면 즉시 게스트로 재진입합니다. 
+
+```c
+/*
+ * Called within kvm->srcu read side.
+ * Returns 1 to let vcpu_run() continue the guest execution loop without
+ * exiting to the userspace.  Otherwise, the value will be returned to the
+ * userspace.
+ * 함수 안에서 vcpu->kvm의 RCU-protected 자료구조에 접근하기 때문에, 호출자가 미리 lock을 잡아줘야 안전하다는 뜻입니다. 그리고 vcpu_run 함수가 for 루프를 계속 돌게 하려면 1을 반환하고, 그 외의 값은 유저 스페이스로 반환된다는 뜻입니다.
+ */
+ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
+{
+    if (kvm_request_pending(vcpu)) {
+        // 진입 전 vCPU에 처리 대기 중인 pending request를 처리하는 부분입니다. dirty ring 처리, EPT 루트 무효화, 게스트 시간(TSC) 갱신, MMU 페이지 테이블 동기화, EPT/TLB flush, 게스트에 NMI/SMI 주입 등이 있습니다.
+    }
+    
+    // 인터럽트/이벤트 주입 준비
+	if (kvm_check_request(KVM_REQ_EVENT, vcpu) || req_int_win ||
+	    kvm_xen_has_interrupt(vcpu)) {
+		++vcpu->stat.req_event;
+		r = kvm_apic_accept_events(vcpu); // INIT/SIPI 처리 (INIT / SIPI: SMP 부팅에서 보조 CPU를 깨우는 IPI 시퀀스를 의미합니다). INIT IPI: 리셋 비슷한 상태로, SIPI (Startup IPI): 이 주소에서 실행 시작
+		if (r < 0) {
+			r = 0;
+			goto out;
+		}
+		if (vcpu->arch.mp_state == KVM_MP_STATE_INIT_RECEIVED) { // 아직 부팅 전
+			r = 1;
+			goto out;
+		}
+
+		r = kvm_check_and_inject_events(vcpu, &req_immediate_exit); // 게스트에 보낼 인터럽트/예외를 VMCS에 채우기, 게스트가 인터럽트 받은 것처럼 만드는 것을 의미합니다. 
+		if (r < 0) {
+			r = 0;
+			goto out;
+		}
+		if (req_int_win)
+			static_call(kvm_x86_enable_irq_window)(vcpu);
+
+		if (kvm_lapic_enabled(vcpu)) {
+			update_cr8_intercept(vcpu);
+			kvm_lapic_sync_to_vapic(vcpu); // virtual APIC 페이지 sync
+		}
+	}
+
+    // 진입 직전 셋업
+    r = kvm_mmu_reload(vcpu); // EPT 로드 보장
+    preempt_disable(); // 호스트 스케줄러 양보 차단
+    static_call(kvm_x86_prepare_switch_to_guest)(vcpu); // vendor specific (TDX/VMX 진입 직전 작업)
+    local_irq_disable(); // 호스트 IRQ 차단
+
+    smp_store_release(&vcpu->mode, IN_GUEST_MODE); // 지금 게스트 들어감
+    kvm_vcpu_srcu_read_unlock(vcpu); // SRCU lock 잠시 풀기
+    smp_mb__after_srcu_read_unlock(); // 메모리 배리어
+
+    // 게스트 진입 루프
+	for (;;) {
+		exit_fastpath = static_call(kvm_x86_vcpu_run)(vcpu); // TDX면 tdx_vcpu_run, 일반이면 vmx_vcpu_run. 이 함수 안에서 SEAMCALL/VMENTER를 발사하고 TD/게스트를 실행합니다.
+		if (likely(exit_fastpath != EXIT_FASTPATH_REENTER_GUEST))
+			break; 
+
+        // exit_fastpath == EXIT_FASTPATH_REENTER_GUEST: 게스트를 아주 빠르게 재진입
+		if (kvm_lapic_enabled(vcpu))
+			static_call_cond(kvm_x86_sync_pir_to_irr)(vcpu);
+
+		if (unlikely(kvm_vcpu_exit_request(vcpu))) {
+			exit_fastpath = EXIT_FASTPATH_EXIT_HANDLED;
+			break;
+		}
+
+		/* Note, VM-Exits that go down the "slow" path are accounted below. */
+		++vcpu->stat.exits;
+	}
+
+    // 진입 후 cleanup
+    vcpu->arch.last_vmentry_cpu = vcpu->cpu;
+	vcpu->arch.last_guest_tsc = kvm_read_l1_tsc(vcpu, rdtsc());
+
+	vcpu->mode = OUTSIDE_GUEST_MODE; // 게스트 모드 해제
+	smp_wmb();
+
+    // exit 핸들러
+    guest_timing_exit_irqoff();
+	local_irq_enable();
+	preempt_enable();
+
+	kvm_vcpu_srcu_read_lock(vcpu);
+
+	if (unlikely(prof_on == KVM_PROFILING)) {
+		unsigned long rip = kvm_rip_read(vcpu);
+		profile_hit(KVM_PROFILING, (void *)rip);
+	}
+
+	if (unlikely(vcpu->arch.tsc_always_catchup))
+		kvm_make_request(KVM_REQ_CLOCK_UPDATE, vcpu);
+
+	if (vcpu->arch.apic_attention)
+		kvm_lapic_sync_from_vapic(vcpu);
+
+	r = static_call(kvm_x86_handle_exit)(vcpu, exit_fastpath); // vendor specific exit handler로, TDX면 tdx_handle_exit, 일반이면 vmx_handle_exit
+	return r;
+```
+`vcpu_enter_guest` 함수는 게스트 진입 사이클을 다루고 있는 함수입니다. `vcpu_run` 루프가 매 iteration마다 호출됩니다. 함수의 전체적인 구조는 다음과 같습니다.
+
+1. pending request 처리
+- 다른 스레드/이벤트가 보낸 `KVM_REQ_*` 비트 다 처리
+- TLB flush, MMU sync, NMI/SMI/SHUTDOWN 등
+- 일부는 즉시 r 반환하고 진입 안 함
+
+2. 인터럽트/예외 주입 준비
+- kvm_check_and_inject_events
+- VMCS의 VM-Entry Interruption-Info field에 채움
+- vmlaunch 직후 **CPU가 게스트 IDT로 자동 dispatch**
+
+3. 진입 직전 셋업
+- kvm_mmu_reload
+- preempt_disable
+- kvm_X86_prepare_switch_to_guest
+- local_irq_disable
+- mode = IN_GUEST_MODE
+- srcu_read_unlock
+- 마지막 abort 검사 (kvm_vcpu_exit_request)
+
+4. 실제 게스트 진입
+- for(;;) 루프 돌면서 fastpath의 경우 즉시 vmenter 다시 하기
+
+5. 진입 후 cleanup
+- debug register 복원
+- mode = OUTSIDE_GUEST_MODE
+- kvm_X86_handle_exit_irqoff (IRQ off 상태 처리)
+- host IRQ 한 번 처리 (local_irq_enable + disable)
+- preempt_enable, srcu_read_lock
+
+6. exit handler
+- r = static_call(kvm_x86_handle_exit)(vcpu, exit_*)
+- vendor specific (TDX는 tdx_handle_exit)
+
+`kvm-intel.ko` 모듈이 로드가 되면 `kvm_ops_update()` 함수가 호출되며 **kvm_x86_ops로 memcpy 한 후 각 필드를 static_call 사이트에 패치** 합니다. 이후 **모든 static_call(kvm_x86_xxx) 호출이 vt_xxx 함수로 direct call** 되게 됩니다.
+
+```c
+static fastpath_t vt_vcpu_run(struct kvm_vcpu *vcpu)
+{
+	if (is_td_vcpu(vcpu))
+		return tdx_vcpu_run(vcpu);
+
+	return vmx_vcpu_run(vcpu);
+}
+```
+`vt_vcpu_run` 함수는 Intel KVM 모듈의 vCPU 실행 dispatcher 역할을 하는 함수입니다. `vm_type`을 보고 KVM_X86_TDX_VM이면 **tdx_vcpu_run** 함수가 호출됩니다.
+
+```c
+fastpath_t tdx_vcpu_run(struct kvm_vcpu *vcpu)
+{
+    // 사전 검증
+	struct vcpu_tdx *tdx = to_tdx(vcpu); // kvm_vcpu -> vcpu_tdx 컨테이너 캐스팅 (TDX 전용 상태 구조체)
+
+	if (unlikely(!tdx->initialized)) // TDH.VP.INIT SEAMCALL 끝났는지 확인
+		return -EINVAL;
+	if (unlikely(vcpu->kvm->vm_bugged)) { // VM이 망가진 상태면 그냥 fail
+		tdx->exit_reason.full = TDX_NON_RECOVERABLE_VCPU;
+		return EXIT_FASTPATH_NONE;
+	}
+
+    // Posted Interrupt 강제 self-IPI. pi_desc의 ON 비트가 켜져있으면 TD에 보낼 인터럽트가 있다는 뜻. TDX는 호스트가 직접 게스트에 인터럽트 주입을 못하고 자기 자신에게 IPI 쏘면 PI hardware가 TD entry 할 때 처리
+	trace_kvm_entry(vcpu); 
+
+	if (pi_test_on(&tdx->pi_desc)) {
+		apic->send_IPI_self(POSTED_INTR_VECTOR);
+
+		kvm_wait_lapic_expire(vcpu);
+	}
+
+	tdx_vcpu_enter_exit(tdx); // 실제 TD 진입/탈출. __seamcall_saved_ret -> TDH.VP.ENTER SEAMCALL -> ... 
+
+    // 호스트 상태 복원
+	tdx_user_return_update_cache(vcpu); // user-return MSR cache 동기화
+	perf_restore_debug_store();  // perf DS 복원 (게스트가 건드릴 수 있는 영역)
+	tdx_restore_host_xsave_state(vcpu);
+	tdx->host_state_need_restore = true; // 다음에 호스트 상태 다시 로드 필요 표시
+
+    // Lazy register cache 무효화
+	vcpu->arch.regs_avail &= ~VMX_REGS_LAZY_LOAD_SET;
+	trace_kvm_exit(vcpu, KVM_ISA_VMX);
+
+    // 인터럽트 후처리. TD에서 나온 후 미러치 인터럽트(NMI, IRQ) 정리하기
+	tdx_complete_interrupts(vcpu);
+
+    // TDVMCALL 결과를 전파하기
+	if (tdx->exit_reason.basic == EXIT_REASON_TDCALL)
+		tdx->tdvmcall.rcx = vcpu->arch.regs[VCPU_REGS_RCX];
+	else
+		tdx->tdvmcall.rcx = 0;
+
+	return EXIT_FASTPATH_NONE;
+}
+```
+**tdx_vcpu_run** 함수는 TD 진입/탈출 1회 사이클을 관리하는 래퍼 함수입니다. **tdx_vcpu_enter_exit(tdx)** 함수가 호출되면 본격적으로 TD로 진입을 시작합니다.
+
+```c
+static noinstr void tdx_vcpu_enter_exit(struct vcpu_tdx *tdx)
+{
+	struct tdx_module_args args;
+
+
+    // guest mode 진입 표시
+	struct kvm_vcpu *vcpu = &tdx->vcpu;
+
+	guest_state_enter_irqoff();
+
+	// 게스트 GPR을 args 구조체로 copy-in
+	args = (struct tdx_module_args) {
+		.rcx = tdx->tdvpr_pa,
+#define REG(reg, REG)	.reg = vcpu->arch.regs[VCPU_REGS_ ## REG]
+		REG(rdx, RDX),
+		REG(r8,  R8),
+		REG(r9,  R9),
+		REG(r10, R10),
+		REG(r11, R11),
+		REG(r12, R12),
+		REG(r13, R13),
+		REG(r14, R14),
+		REG(r15, R15),
+		REG(rbx, RBX),
+		REG(rdi, RDI),
+		REG(rsi, RSI),
+#undef REG
+	};
+
+    // SEAMCALL 호출하는 함수. 리턴값은 tdx->exit_reason.full에 저장이 되고, VMX exit reason 인코딩을 포함합니다
+	tdx->exit_reason.full = __seamcall_saved_ret(TDH_VP_ENTER, &args);
+
+    // args에서 게스트 GPR copy-out
+#define REG(reg, REG)	vcpu->arch.regs[VCPU_REGS_ ## REG] = args.reg
+		REG(rcx, RCX);
+		REG(rdx, RDX);
+		REG(r8,  R8);
+		REG(r9,  R9);
+		REG(r10, R10);
+		REG(r11, R11);
+		REG(r12, R12);
+		REG(r13, R13);
+		REG(r14, R14);
+		REG(r15, R15);
+		REG(rbx, RBX);
+		REG(rdi, RDI);
+		REG(rsi, RSI);
+#undef REG
+
+    // 소프트웨어 에러 검출
+	WARN_ON_ONCE(!kvm_rebooting &&
+		     (tdx->exit_reason.full & TDX_SW_ERROR) == TDX_SW_ERROR);
+
+    // NMI 인라인 처리
+	if ((u16)tdx->exit_reason.basic == EXIT_REASON_EXCEPTION_NMI &&
+	    is_nmi(tdexit_intr_info(vcpu))) {
+		kvm_before_interrupt(vcpu, KVM_HANDLING_NMI);
+		vmx_do_nmi_irqoff();
+		kvm_after_interrupt(vcpu);
+	}
+	guest_state_exit_irqoff();
+}
+```
+시그니처에서 `noinstr`는 instrumentation을 하지 말라는 것을 나타냅니다. 인자는 `vcpu_tdx`입니다. TD 한 사이클의 SEAMCALL 호출을 맡습니다. 게스트 GPR(General Purpose Registers)은 **게스트가 실행 중에 쓰는 CPU 레지스터 값** 을 의미합니다. 게스트에서 호스트로 전환 될 때는 **CPU 레지스터 값을 메모리(vcpu->arch.regs[])에** 넣어두고, 호스트에서 게스트로 전환할 때는 **메모리에서 레지스터 값을 꺼내 CPU 레지스터에** 넣습니다. 일단 VMXdㅔ서는 KVM이 직접 어셈블리로 CPU 레지스터에 로드를 하는데, TDX는 그렇게 할 수 없으니 **TDX module에게 전달** 하면서 게스트 레지스터에 로드할 수 있게 합니다. 참고로 오고 가는 GPR 개수에 따라 호출하는 API가 달라집니다.
+
+```c
+u64 __seamcall(u64 fn, struct tdx_module_args *args);            // 단순 SEAMCALL (RAX status만 주고 받기)
+u64 __seamcall_ret(u64 fn, struct tdx_module_args *args);        // SEAMCALL이 결과를 GPR로 돌려줄 때
+u64 __seamcall_saved_ret(u64 fn, struct tdx_module_args *args);  // 추가로 RBX/RSI/RDI/RBP까지 주고 받음
+```
+
 
 ### APIC export
 
