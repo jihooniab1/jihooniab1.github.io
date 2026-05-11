@@ -714,8 +714,64 @@ static noinstr void tdx_vcpu_enter_exit(struct vcpu_tdx *tdx)
 ```c
 u64 __seamcall(u64 fn, struct tdx_module_args *args);            // 단순 SEAMCALL (RAX status만 주고 받기)
 u64 __seamcall_ret(u64 fn, struct tdx_module_args *args);        // SEAMCALL이 결과를 GPR로 돌려줄 때
-u64 __seamcall_saved_ret(u64 fn, struct tdx_module_args *args);  // 추가로 RBX/RSI/RDI/RBP까지 주고 받음
+u64 __seamcall_saved_ret(u64 fn, struct tdx_module_args *args);  // 추가로 RBX/RSI/RDI/R12-R15까지 주고 받음
 ```
+이 어셈블리 함수들의 정의는 **seamcall.S** 에서 확인할 수 있습니다.
+```
+SYM_FUNC_START(__seamcall)
+	TDX_MODULE_CALL host=1
+SYM_FUNC_END(__seamcall)
+EXPORT_SYMBOL_GPL(__seamcall);
+
+SYM_FUNC_START(__seamcall_ret)
+	TDX_MODULE_CALL host=1 ret=1
+SYM_FUNC_END(__seamcall_ret)
+EXPORT_SYMBOL_GPL(__seamcall_ret);
+
+SYM_FUNC_START(__seamcall_saved_ret)
+	TDX_MODULE_CALL host=1 ret=1 saved=1
+SYM_FUNC_END(__seamcall_saved_ret)
+EXPORT_SYMBOL_GPL(__seamcall_saved_ret);
+```
+**TDX_MODULE_CALL** 은 tdxcall.S에 정의된 어셈블리 코드 템플릿입니다. 컴파일 과정에서 seamcall.S의 매크로 호출이 tdxcall.S의 어셈블리 코드로 치환됩니다. tdxcall.S은 **.macro TDX_MODULE_CALL host:req ret=0 saved=0** 부터 **.endm** 까지 어셈블리 코드로 이루어져 있으며, `host:req, ret=0, saved=0`은 host 값은 명시되어야 하고, 나머지 두 파라미터의 기본값은 0으로 간주한다는 의미입니다. 
+```
+.if \host && \ret && \saved
+	pushq	%rbp
+	movq	%rsp, %rbp
+.else
+	FRAME_BEGIN
+.endif
+```
+이때 `\host`는 host=1일 때 if 블럭을 적용한다는 의미입니다. 큰 골격으로 봤을 때 매크로는 파라비터별 케이스를 구분하면서 **준비 - seamcalll/tdcall - 회수 - 복원/정리** 구조를 구성하고 있습니다. 파라미터의 경우, host가 1이면 seamcall, 0이면 tdcall을 호출한다거나 saved=1이면 추가 GPR 활용, callee-saved 보존 작업을 추가로 하는 것 등을 의미합니다.
+
+이제 추가된 공격 코드를 다시 살펴보겠습니다. `seamcall.S`에 새로 추가된 파라미터와 API를 함수를 확인할 수 있습니다. 
+```c
+/*
+ * __seamcall_saved_ret_tdxstep() - Host-side interface functions to SEAM software
+ * (the P-SEAMLDR or the TDX module), with saving output registers to the
+ * 'struct tdx_module_args' used as input.
+ *
+ * __seamcall_saved_ret_tdxstep() function ABI:
+ *
+ * @fn   (RDI)  - SEAMCALL Leaf number, moved to RAX
+ * @args (RSI)  - struct tdx_module_args for input and output
+ * @args (RDX)  - timings_array   : Index 0 rdtsc timestamp directly after seamcall. Index 1 value we write to MSR_IA32_TSC_DEADLINE. We need
+ * @args (RCX)  - apic_tsc_offset : if nonzero, write rdtsc() + apic_tsc_offset to MSR_IA32_TSC_DEADLINE in order to start the apic timer
+ *
+ * All registers in @args are used as input/output registers.
+ *
+ * Return (via RAX) TDX_SEAMCALL_VMFAILINVALID if the SEAMCALL itself
+ * fails, or the completion status of the SEAMCALL leaf function.
+ */
+SYM_FUNC_START(__seamcall_saved_ret_tdxstep)
+	TDX_MODULE_CALL host=1 ret=1 saved=1 tdxstep=1
+SYM_FUNC_END(__seamcall_saved_ret_tdxstep)
+EXPORT_SYMBOL_GPL(__seamcall_saved_ret_tdxstep)
+```
+새로 추가된 파라미터는 `tdxstep`으로 tdxstep=1이면 공격하는 것을 나타냅니다. 그리고 기존 레지스터 중 사용하지 않던 두 레지스터 rdx, rcx를 이용하여 추가 정보를 전달합니다. 
+- rdx: `timings` - 호출자가 미리 할당한 배열의 포인터로, 인덱스 0에는 seamcall 직후 읽은 rdtsc값, 1에는 MSR에 쓴 deadline 값이 들어갑니다. 
+- rcx: `apic_tsc_offset` - APIC 타이머를 언제 발사시킬지 결정하는 단방향 설정값으로, nonzero라면 `rdtsc() + apic_tsc_offset`을 계산하여 **MSR_IA32_TSC_DEALINE** 에 기록함으로써 TSC-dealine 모드로 미리 설정된 APIC 타이머를 장전합니다. 
+
 
 
 ### APIC export
