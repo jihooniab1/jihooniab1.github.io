@@ -6,19 +6,19 @@ tags: [OS]
 permalink: /posts/Embedded-OS/
 ---
 ## 1장
-**임베디드 운영체제:** 하드웨어에 내장되어 있는 운영체제. 운영체제의 기능 중 필요한 것만 효율적으로 구현
+**임베디드 운영체제:** 하드웨어에 내장되어 있는 운영체제. 운영체제의 기능 중 필요한 것만 효율적으로 구현한 것입니다.
 
-**RTOS(RealTime Operating System):** 운영체제의 응답과 동작이 즉각적이고 실시간으로 이뤄짐. 에뮬레이터 환경을 갖고 개발할 예정
+**RTOS(RealTime Operating System):** 운영체제의 응답과 동작이 즉각적이고 실시간으로 이뤄집니다. 에뮬레이터 환경을 갖고 개발할 예정입니다.
 
-https://github.com/navilera/Navilos << 교재에서 작성된 코드가 있는 아카이브
+https://github.com/navilera/Navilos << 교재에서 작성된 코드가 있는 아카이브입니다
 
 ```sh
 wget https://github.com/navilera/Navilos/archive/95f2b8d.zip
 ```
-각 챕터 커밋의 고유값을 바꿔가며 코드를 다운받을 수 있음.
+각 챕터 커밋의 고유값을 바꿔가며 코드를 다운받을 수 있습니다.
 
 ## 2장
-임베디드 시스템에서 동작하는 펌웨어를 만들려면, 해당 임베디드 시스템에 맞는 컴파일러를 사용해야함. ARM이면 ARM 컴파일러, MIPS는 MIPS용.. 컴파일하는 환경과 결과물이 실행될 환경이 다를 때 **크로스 컴파일러(cross-compiler)** 를 사용함. arm을 지원하는 GCC에도 여러가지가 있는데 `gcc-arm-플랫폼-ABI 타입` 형태로 구성되어 있음. 플랫폼이 linux면 linux용 실행 파일을 만들고, none이면 ARM 바이너리를 생성하는 것. **ABI(Application Binary Interface)** 는 C 언어에서 함수 호출을 어떻게 하는지를 정한 규약으로, 교재에서는 `gcc-arm-none-eabi`를 사용함
+임베디드 시스템에서 동작하는 펌웨어를 만들려면, 해당 임베디드 시스템에 맞는 컴파일러를 사용해야함. ARM이면 ARM 컴파일러, MIPS는 MIPS용.. 컴파일하는 환경과 결과물이 실행될 환경이 다를 때 **크로스 컴파일러(cross-compiler)** 를 사용합니다. arm을 지원하는 GCC에도 여러가지가 있는데 `gcc-arm-플랫폼-ABI 타입` 형태로 구성되어 있습니다. 플랫폼이 linux면 linux용 실행 파일을 만들고, none이면 ARM 바이너리를 생성하는 것. **ABI(Application Binary Interface)** 는 C 언어에서 함수 호출을 어떻게 하는지를 정한 규약으로, 교재에서는 `gcc-arm-none-eabi`를 사용합니다.
 ```sh
 sudo apt install gcc-arm-none-eabi
 
@@ -30,7 +30,7 @@ Target: arm-none-eabi
 ...
 ```
 
-에뮬레이터로는 `qemu-system-arm`을 사용. 지원하는 머신 목록도 확인할 수 있음.
+에뮬레이터로는 `qemu-system-arm`을 사용. 지원하는 머신 목록도 확인할 수 있습니다. 
 ```sh
 sudo apt install qemu-system-arm
 
@@ -217,4 +217,96 @@ build/%.o: boot/%.S
 
 ![ch3_1](/assets/img/posts/books/embedded/ch3_1.png) <br>
 
-메모리 주소 0x10000000에 어떤 값이 있는지 데이터시트를 통해 찾아보겠습니다. 
+메모리 주소 0x10000000에 어떤 값이 있는지 데이터시트를 통해 찾아보겠습니다. **Programmer's Reference -> Status and system control registers -> ID Register,SYS_ID** 에서 0x10000000 주소에 있는 레지스터의 정보를 알아낼 수 있습니다. <br>
+
+![ch3_2](/assets/img/posts/books/embedded/ch3_2.png) <br>
+
+데이터시트에 따르면 SYS_ID는 `FPGA, ARCH, BUILD, HBI, REV` 항목으로 나뉘어져 있으며, 보드와 FPGA를 식별하는데 사용됩니다. SYS_ID로부터 메모리를 로드하여 HBI, ARCH 항목의 기본값이 실제로 로드되는지 확인해보겠습니다. Entry.S를 아래와 같이 수정하여 하드웨어 정보를 읽어오게 할 수 있습니다.
+```
+.text
+	.code 32
+
+	.global vector_start
+	.global vector_end
+
+	vector_start:
+		LDR R0, =0x10000000
+		LDR R1, [R0]
+	vector_end:
+		.space 1024, 0
+.end
+```
+
+다시 빌드하고 실행한 후, gdb를 붙여보겠습니다. 참고로 컴파일할 때 `-g` 옵션을 넣어서 디버깅 심벌을 실행 파일에 포함할 수 있고, gdb 안에서 **file** 명령을 통해 심볼을 읽어올 수 있습니다. <br>
+
+![ch3_3](/assets/img/posts/books/embedded/ch3_3.png) <br>
+
+![ch3_4](/assets/img/posts/books/embedded/ch3_4.png) <br>
+
+데이터시트가 설명하는 내용과 디버깅 결과가 일치하는 것을 볼 수 있습니다. 0x1780500이라는 값을 2진수로 변환한 후 항목에 맞게 나누면 `0000` `000101111000(178)` `0000` `0101(5)` `00000000` 이렇게 나눠지고, 보드 리비전과 버스 아키텍처 정보를 알아낼 수 있습니다. 
+
+## 4장
+### 메모리 설계
+실행 파일은 메모리를 크게 세 가지로 나누어 text(코드가 있는 공간), data(초기화된 전역 변수), BSS(초기화되지 않은 전역 변수)로 나눕니다. 실제 환경에서는 메모리의 크기와 속도를 전부 고려하여 영역을 배치하지만 QEMU에서는 그런 구분이 없으니 순서대로 배치합니다. 
+
+text 영역에는 1MB를 할당하고, **익셉션 벡터 테이블** 을 배치할 것이므로 시작 주소는 0x00000000이 되어야 합니다. 크기가 1MB이니 끝나는 주소는 0x000FFFFF입니다. 
+
+UND, ABT, FIQ, IRQ, SVC, USR, SYS 개별 동작 모드마다 각 1MB씩 할당이 됩니다. USR, SYS 모드는 메모리 공간과 레지스터를 모두 공유하므로 하나로 묶어서 보았고 기본 동작 모드로 사용될 것이므로 2MB를 할당했습니다. 
+
+RTOS 위에서 동작할 **태스크(task) 스택 영역** 은, 최대 `64개`의 태스크에 대해 1MB씩 할당하여 총 64MB를 할당합니다. 남는 공간은 동적 할당 메모리용으로 구분하였습니다.
+
+| 영역 | 시작 주소 | 끝 주소 | 크기 |                                                                                                            
+|------|-----------|---------|------|                                                                                                            
+| 동적 할당 영역 | 0x04900000 | 0x07FFFFFF | 55MB |                                                                                              
+| 전역 변수 영역 | 0x04800000 | 0x048FFFFF | 1MB |                                                                                               
+| 태스크 스택 영역 | 0x00800000 | 0x047FFFFF | 64MB |
+| UND 스택 영역 | 0x00100000 | 0x001FFFFF | 1MB |
+| ABT 스택 영역 | 0x00200000 | 0x002FFFFF | 1MB |
+| FIQ 스택 영역 | 0x00300000 | 0x003FFFFF | 1MB |
+| IRQ 스택 영역 | 0x00400000 | 0x004FFFFF | 1MB |
+| SVC 스택 영역 | 0x00500000 | 0x005FFFFF | 1MB |
+| USR/SYS 스택 영역 | 0x00600000 | 0x007FFFFF | 2MB |
+| Text 영역 | 0x00000000 | 0x000FFFFF | 1MB |
+
+### 익셉션 벡터 테이블
+이제 익셉션 테이블을 배치하고 핸들러를 작성할 차례입니다. 
+```
+.text
+	.code 32
+
+	.global vector_start
+	.global vector_end
+
+	vector_start:
+		LDR		PC, reset_handler_addr
+		LDR		PC, undef_handler_addr
+		LDR		PC, svc_handler_addr
+		LDR		PC, pftch_abt_handler_addr
+		LDR		PC, data_abt_handler_addr
+		B		.
+		LDR		PC, irq_handler_addr
+		LDR		PC, fiq_handler_addr
+
+		reset_handler_addr: 	.word reset_handler
+		undef_handler_addr: 	.word dummy_handler
+		svc_handler_addr: 		.word dummy_handler
+		pftch_abt_handler_addr: .word dummy_handler
+		data_abt_handler_addr:  .word dummy_handler
+		irq_handler_addr:		.word dummy_handler
+		fiq_handler_addr:		.word dummy_handler
+	vector_end:
+
+	reset_handler:
+		LDR		R0, =0x10000000
+		LDR		R1, [R0]
+	vector_end:
+		.space 1024, 0
+
+	dummy_handler:
+		B .
+.end
+```
+8~15 line에 익셉션 벡터 테이블이 작성되어 있습니다. 그 아래에는 벡터 테이블에서 사용하는 변수들이 선언되어 있습니다. 이전의 `SYS_ID`를 읽는 코드가 리셋 익셉션 핸들러에 들어있고, 실행 결과는 다음과 같습니다. <br>
+
+![ch4_1](/assets/img/posts/books/embedded/ch4_1.png) <br>
+
