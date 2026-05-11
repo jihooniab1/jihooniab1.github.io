@@ -347,7 +347,7 @@ static long kvm_vcpu_ioctl(struct file *filp,
 			if (r)
 				break;
 
-			newpid = get_task_pid(current, PIDTYPE_PID);ㄴ
+			newpid = get_task_pid(current, PIDTYPE_PID);
 			rcu_assign_pointer(vcpu->pid, newpid);
 			if (oldpid)
 				synchronize_rcu();
