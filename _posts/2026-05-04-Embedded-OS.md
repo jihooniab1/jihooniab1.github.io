@@ -243,7 +243,7 @@ build/%.o: boot/%.S
 
 ![ch3_4](/assets/img/posts/books/embedded/ch3_4.png) <br>
 
-데이터시트가 설명하는 내용과 디버깅 결과가 일치하는 것을 볼 수 있습니다. 0x1780500이라는 값을 2진수로 변환한 후 항목에 맞게 나누면 `0000` `000101111000(178)` `0000` `0101(5)` `00000000` 이렇게 나눠지고, 보드 리비전과 버스 아키텍처 정보를 알아낼 수 있습니다. 
+데이터시트가 설명하는 내용과 디버깅 결과가 일치하는 것을 볼 수 있습니다. 0x1780500이라는 값을 2진수로 변환한 후 항목에 맞게 나누면 `0000` `000101111000(178)` `0000` `0101(5)` `00000000` 이렇게 나눠지고, 보드 리비전과 버스 아키텍처 정보를 알아낼 수 있습니다. 3장 코드는 [chap03](https://github.com/jihooniab1/jihooniab1.github.io/tree/main/code/embedded-os/chap03)에서 확인할 수 있습니다.
 
 ## 4장
 ### 메모리 설계
@@ -381,3 +381,151 @@ FIQ 모드는 FIQ 모드에서만 쓸 수 있게 배정된 R8 ~ R12 레지스터
 
 ![ch4_1](/assets/img/posts/books/embedded/ch4_1.png) <br>
 
+리셋 익셉션 핸들러에서 가장 먼저 해야하는 일은 **메모리 맵을 설정** 하는 작업입니다. USR, SYS 모드는 레지스터를 공유하므로 SP 레지스터는 총 6개가 뱅크드 레지스터로 제공되는데, 리셋 익셉션 핸들러에서는 동작 모드를 순서대로 변경해 가면서 SP 레지스터에 정해진 값을 넣는 작업을 수행합니다. 헤더 파일로 스택 시작 메모리 주소와 스택 크기, 스택 꼭대기 메모리 주소를 정의하는 `MemoryMap.h` 파일과 동작 모드 전환 값을 정의하는 `ARMv7AR.h` 파일을 만들겠습니다. 폴더 구조는 다음과 같습니다.
+
+```
+chap04$ tree
+.
+├── boot
+│   ├── Entry.o
+│   └── Entry.S
+├── include
+│   ├── ARMv7AR.h
+│   └── MemoryMap.h
+├── Makefile
+├── navilos.axf
+└── navilos.ld
+```
+
+책에서는 스택의 꼭대기 주소는 **스택의 시작 주소 + 스택의 크기 - 4** 방식으로 계산하고 있습니다. 4바이트는 패딩 느낌입니다. 
+
+```c
+#define INST_ADDR_START     0
+#define USRSYS_STACK_START  0x00100000
+#define SVC_STACK_START     0x00300000
+#define IRQ_STACK_START     0x00400000
+#define FIQ_STACK_START     0x00500000
+#define ABT_STACK_START     0x00600000
+#define UND_STACK_START     0x00700000
+#define TASK_STACK_START    0x00800000
+#define GLOBAL_ADDR_START   0x04800000
+#define DALLOC_ADDR_START   0x04900000
+
+#define INST_MEM_SIZE       (USRSYS_STACK_START - INST_ADDR_START)
+#define USRSYS_STACK_SIZE   (SVC_STACK_START - USRSYS_STACK_START)
+#define SVC_STACK_SIZE      (IRQ_STACK_START - SVC_STACK_START)
+#define IRQ_STACK_SIZE      (FIQ_STACK_START - IRQ_STACK_START)
+#define FIQ_STACK_SIZE      (ABT_STACK_START - FIQ_STACK_START)
+#define ABT_STACK_SIZE      (UND_STACK_START - ABT_STACK_START)
+#define UND_STACK_SIZE      (TASK_STACK_START - UND_STACK_START)
+#define TASK_STACK_SIZE     (GLOBAL_ADDR_START - TASK_STACK_START)
+#define DALLOC_MEM_SIZE     (55 * 1024 * 1024)
+
+#define USRSYS_STACK_TOP    (USRSYS_STACK_START + USRSYS_STACK_SIZE - 4)
+#define SVC_STACK_TOP       (SVC_STACK_START + SVC_STACK_SIZE - 4)
+#define IRQ_STACK_TOP       (IRQ_STACK_START + IRQ_STACK_SIZE - 4)
+#define FIQ_STACK_TOP       (FIQ_STACK_START + FIQ_STACK_SIZE - 4)
+#define ABT_STACK_TOP       (ABT_STACK_START + ABT_STACK_SIZE - 4)
+#define UND_STACK_TOP       (UND_STACK_START + UND_STACK_SIZE - 4)
+```
+
+CPSR에 값을 설정하여 동작 모드를 바꿀 수 있는 값을 다음 헤더 파일에 정의하였습니다.
+```c
+/* PSR Mode Bit Values */
+#define ARM_MODE_BIT_USR 0x10
+#define ARM_MODE_BIT_FIQ 0x11
+#define ARM_MODE_BIT_IRQ 0x12
+#define ARM_MODE_BIT_SVC 0x13
+#define ARM_MODE_BIT_ABT 0x17
+#define ARM_MODE_BIT_UND 0x1B
+#define ARM_MODE_BIT_SYS 0x1F
+#define ARM_MODE_BIT_MON 0x16
+```
+
+선언된 헤더파일들은 `#include` 문법을 통해 어셈블리에 포함시킬 수 있으며, 수정된 Entry.S는 아래 코드를 반복 실행하며 동작 모드별 스택 주소를 설정합니다. 전체 코드는 [chap04_Entry](https://github.com/jihooniab1/jihooniab1.github.io/blob/main/code/embedded-os/chap04/boot/Entry.S)에서 확인할 수 있습니다.
+```
+MRS r0, cpsr
+BIC r1, r0, #0x1F
+ORR r1, r1, #ARM_MODE_BIT_SVC
+MSR cpsr, r1
+LDR sp, =SVC_STACK_TOP
+```
+- MRS r0, cpsr: 현재 PSR(CPSR)을 r0로 읽어옵니다. 
+- BIC r1, r0, #0x1F: r0의 **하위 5비트를 비트마스킹** 하는 어셈블리어입니다. #0x1F는 `즉시값(immediate)`으로 0x1F=0b11111, 비트마스킹할 패턴이 하위 5비트임을 나타냅니다. 
+- ORR, r1, r1, #동작 모드: 클리어된 필드에 동작 모드에 대응되는 값을 채워넣는 부분입니다. SVC는 0x13이니 `0b10011`을 채우는 것입니다.
+- MSR cpsr, r1: 수정한 값을 CPSR에 다시 써넣는 부분이고, 이때부터 CPU의 동작 모드가 전환되면서 그 모드의 lr, sp, spsr이 사용됩니다.
+- LDR sp, =스택 꼭대기 메모리 주소: 동작 모드의 스택 포인터에 스택 최상단 주소를 로드합니다. `=`는 **리터럴 풀에서 주소를 가져오는** 의사명령어입니다. 
+
+빌드를 하기 전에 Makefile을 수정하여 헤더파일을 포함시켜야 합니다. include를 포함시키고, 전처리문 처리를 위해 `arm-none-eabi-as` 대신 `arm-none-eabi-gcc`를 사용합니다. 
+```
+ARCH = armv7-a
+MCPU = cortex-a8
+
+CC = arm-none-eabi-gcc
+AS = arm-none-eabi-as
+LD = arm-none-eabi-ld
+OC = arm-none-eabi-objcopy
+
+LINKER_SCRIPT = ./navilos.ld
+
+ASM_SRCS = $(wildcard boot/*.S)
+ASM_OBJS = $(patsubst boot/%.S, build/%.o, $(ASM_SRCS))
+
+INC_DIRS = include # 여기 추가
+
+navilos = build/navilos.axf
+navilos_bin = build/navilos.bin
+
+.PHONY: all clean run debug gdb
+
+all: $(navilos)
+
+clean:
+	@rm -fr build
+	
+run: $(navilos)
+	qemu-system-arm -M realview-pb-a8 -kernel $(navilos)
+	
+debug: $(navilos)
+	qemu-system-arm -M realview-pb-a8 -kernel $(navilos) -S -gdb tcp::1234,ipv4
+	
+gdb:
+	arm-none-eabi-gdb
+	
+$(navilos): $(ASM_OBJS) $(LINKER_SCRIPT)
+	$(LD) -n -T $(LINKER_SCRIPT) -o $(navilos) $(ASM_OBJS)
+	$(OC) -O binary $(navilos) $(navilos_bin)
+	
+build/%.o: boot/%.S
+	mkdir -p $(shell dirname $@)
+	$(CC) -march=$(ARCH) -mcpu=$(MCPU) -I $(INC_DIRS) -g -o $@ $< # 여기 수정
+```
+
+make debug를 하고 디버거를 붙이면 원하는 대로 스택이 설정되는 것을 확인할 수 있습니다. <br>
+
+![ch4_4](/assets/img/posts/books/embedded/ch4_4.png) <br>
+
+```
+        MRS r0, cpsr
+        BIC r1, r0, #0x1F
+        ORR r1, r1, #ARM_MODE_BIT_SYS
+        MSR cpsr, r1
+        LDR sp, =USRSYS_STACK_TOP
+
+		BL main
+```
+Entry.S 스택 설정 후에 **BL main** 을 추가하여 어셈블리 코드에서 C 언어 코드로 진입할 수 있도록 합니다. C 언어 함수로 점프할 수 있으려면 **대상 레이블이 같은 파일에 있거나 링킹할 수 있도록 .global로 선언해야** 합니다. 컴파일러는 C 언어 함수 이름을 **링커가 자동으로 접근할 수 있는 전역 심볼** 로 만듭니다. 일단 100MB 메모리 주소 영역에 의미 없는 값을 쓰는 C 코드(boot/Main.c)를 작성해보습니다.
+
+```c
+#include "stdint.h"
+
+void main(void)
+{
+	uint32_t* dummyAddr = (uint32_t*)(1024*1024*100);
+	*dummyAddr = sizeof(long);
+}
+```
+
+이후 Makefile의 내용을 수정하여 C 언어 소스 파일을 컴파일 할 수 있도록 해야 합니다. 링커는 링킹 작업을 할 때 **심벌에 할당된 메모리 주소를 map 파일에 기록** 하는데, Makefile을 수정하여 이 map 파일 이름을 지정합니다. `C_SRCS`에는 C 언어 소스 코드 파일 이름을 저장하고, `C_OBJS`에는 C언어 소스파일이 **컴파일 되어 만들어진 오브젝트 파일 이름을 저장** 합니다. chap04에 해당하는 코드는 [chap04](https://github.com/jihooniab1/jihooniab1.github.io/tree/main/code/embedded-os/chap04)에 정리해두었습니다. `0x6400000` 주소에 값 4가 저장되는 것을 볼 수 있습니다. <br>
+
+![ch4_5](/assets/img/posts/books/embedded/ch4_5.png) <br>
