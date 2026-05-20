@@ -529,3 +529,84 @@ void main(void)
 이후 Makefile의 내용을 수정하여 C 언어 소스 파일을 컴파일 할 수 있도록 해야 합니다. 링커는 링킹 작업을 할 때 **심벌에 할당된 메모리 주소를 map 파일에 기록** 하는데, Makefile을 수정하여 이 map 파일 이름을 지정합니다. `C_SRCS`에는 C 언어 소스 코드 파일 이름을 저장하고, `C_OBJS`에는 C언어 소스파일이 **컴파일 되어 만들어진 오브젝트 파일 이름을 저장** 합니다. chap04에 해당하는 코드는 [chap04](https://github.com/jihooniab1/jihooniab1.github.io/tree/main/code/embedded-os/chap04)에 정리해두었습니다. `0x6400000` 주소에 값 4가 저장되는 것을 볼 수 있습니다. <br>
 
 ![ch4_5](/assets/img/posts/books/embedded/ch4_5.png) <br>
+
+## 5장
+### UART
+**UART: Universal Asynchronous Receiver/Transmitter**, 범용 비동기화 송수신기
+
+UART를 사용하려면, UART 하드웨어의 레지스터를 코드로 만들어야 함 (RealVeiwPB의 UART 하드웨어 모듈은 PL011)
+
+PL011 [명세 문서](https://www.taylortjohnson.com/class/cse2312/f14/uart_manual.pdf)를 보면 PL011의 레지스터 목록을 확인할 수 있습니다. <br>
+![ch5_1](/assets/img/posts/books/embedded/ch5_1.png) <br>
+
+맨 처음에 있는 오프셋 0x00의 `UARTDR` 레지스터를 살펴보겠습니다. 데이터시트에 레지스터의 자세한 설명이 수록되어있습니다. <br>
+
+![ch5_2](/assets/img/posts/books/embedded/ch5_2.png) <br>
+
+UARTDR은 **데이터 레지스터** 입니다(UART Data Register). 그림을 보면 0번부터 7번 비트까지 1 바이트는 입출력 데이터가 사용하는 레지스터입니다. 8번부터 11번 비트까지는 각 에러가 발생했을 때 해당 비트가 1로 바뀝니다. 이러한 레지스터를 코드로 옮기려면 C 언어 매크로나 구조체를 활용할 수 있습니다. 책에서는 구조체를 이용하여 레지스터를 코딩합니다.
+```c
+typedef union UARTDR_t
+{
+    uint32_t all;
+    struct {
+        uint32_t DATA:8;    // 7:0
+        uint32_t FE:1;      // 8
+        uint32_t PE:1;      // 9
+        uint32_t BE:1;      // 10
+        uint32_t OE:1;      // 11
+        uint32_t reserved:20;
+    } bits;
+} UARTDR_t;
+
+typedef union UARTRSR_t
+{
+    uint32_t all;
+    struct {
+        uint32_t FE:1;      // 0
+        uint32_t PE:1;      // 1
+        uint32_t BE:1;      // 2
+        uint32_t OE:1;      // 3
+        uint32_t reserved:28;
+    } bits;
+} UARTRSR_t;
+```
+`union`은 같은 메모리를 여러 방식으로 해석할 수 있게 해주는 타입입니다. `all`로 레지스터 전체를 한번에 읽고 쓰거나, `bits`로 특정 비트만 접근할 수 있습니다. 비트필드(`:숫자`)는 구조체 멤버가 몇 비트를 차지할지 지정하는 C 문법으로, `UARTDR_t`의 경우 `8+1+1+1+1+20 = 32`로 `uint32_t` 크기와 일치합니다. 이런식으로 코딩을 해두면 다음과 같은 방식으로 사용할 수 있습니다.
+
+```c
+typedef struct PL011_t
+{
+	UARTDR_t uartdr;  // 0x000
+	...
+	UARTCR_t uartcr;  // 0x030
+} PL011_t;
+
+// 아래처럼 쓸 수 있습니다
+PL011_t* Uart = (PL011_t*)UART_BASE_ADDR;
+
+Uart->uartdr.DATA = data & 0xFF;
+if (Uart->uartdr.FE || Uart->uartdr.PE || Uart->uartdr.BE || Uart->uartdr.OE ){
+	// 에러 처리 코드
+}
+```
+
+이렇게 사용할 수 있도록 [Uart.h](https://github.com/jihooniab1/jihooniab1.github.io/tree/main/code/embedded-os/chap05/hal/rvpb/Uart.h) 파일을 추가하였습니다. UART 하드웨어의 베이스 주소만 할당하면 나머지 레지스터는 구조체 메모리 접근 규칙에 따라 이름으로 접근할 수 있게 됩니다. 또한 UART 하드웨어를 제어할 수 있는 **Uart** 변수도 Regs.c에 선언하였습니다. 소스코드 트리는 다음과 같습니다.
+```
+embedded-os/chap05$ tree
+.
+├── boot
+│   ├── Entry.o
+│   ├── Entry.S
+│   └── Main.c
+├── hal
+│   └── rvpb
+│       ├── Regs.c
+│       └── Uart.h
+├── include
+│   ├── ARMv7AR.h
+│   ├── MemoryMap.h
+│   └── stdint.h
+├── Makefile
+├── navilos.axf
+└── navilos.ld
+```
+
