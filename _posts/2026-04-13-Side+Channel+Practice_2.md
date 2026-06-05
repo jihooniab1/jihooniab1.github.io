@@ -1021,6 +1021,36 @@ if( (acfg->state == AS_WAITING_FOR_TARGET) && (fault->gfn ==(acfg->target_trigge
 `AS_WAITING_FOR_TARGET`은 trigger sequence를 따라가는 중인 상태를 의미합니다. 조건문 블럭 안에서 trigger sequence를 하나씩 따라가면서 unzap-zap을 반복하고, target에 도달하면 **AS_WAITING_FOR_DONE_MARKER** 상태로 전이합니다. Target에 도달하면 `done_marker_gpa`를 zap하여 iteration 끝을 감지하는 trap을 설치합니다. 그 후 done_marker에 방문하면 모든 page tracking을 해제하고 state를 **AS_WAITING_FOR_END_OF_SEQ** 로 전이하고 singe-step 측정 phase를 종료합니다.
 
 ## 실제 세팅
+```
+                                                                                                                                                                                        
+
+● 찾았어. property는 등록됐는데 QAPI 스키마가 debug를 모름. -object는 QAPI 타입 검증을 거쳐서 qom.json의 TdxGuestProperties에 정의된 것만 받음. 거기에 debug 추가해야 함:
+
+● Bash(sed -n '880,925p' /home/user/css/TDXploit/qemu-src/qemu-8.2.2/qapi/qom.json)
+  ⎿  ##
+     # @TdxGuestProperties:
+     #
+     … +42 lines (ctrl+o to expand)
+
+● Update(qemu-src/qemu-8.2.2/qapi/qom.json)
+  ⎿  Added 1 line
+      909  ##
+      910  { 'struct': 'TdxGuestProperties',
+      911    'data': { '*sept-ve-disable': 'bool',
+      912 +            '*debug': 'bool',                                                                                                                                         
+      913              '*mrconfigid': 'str',
+      914              '*mrowner': 'str',
+      915              '*mrownerconfig': 'str',
+
+● 로컬에서 패치한 qom.json만 원격으로 보내:
+
+  # 로컬에서
+  scp -P 999 /home/user/css/TDXploit/qemu-src/qemu-8.2.2/qapi/qom.json \
+      ubuntu@163.152.125.60:~/jh/qemu-tdx-build/qemu-src/qemu-8.2.2/qapi/qom.json
+
+  원격에서 재빌드:
+
+```
 1. 6.8.0 canonical/intel 커널 소스코드 다운받기
 ```
 dpkg-source -x linux-intel-opt_6.5.0-1003.3.dsc 
