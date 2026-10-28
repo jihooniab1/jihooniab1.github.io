@@ -31,7 +31,7 @@ Phase II에서는 오버플로우와 힙 스프레이(@19)를 결합해 `msg_msg
 이어 `pipe_buffer`와 `sk_buff`를 이용한 spray-and-read로 함수 포인터와 커널 주소를 유출하여 `KASLR(#38)`을 우회합니다. 이후 함수 포인터를 덮어써 IP 제어 프리미티브를 획득하고, Phase III에서 스택 피벗과 ROP를 수행해 커널 제어 흐름을 탈취함으로써 권한 상승과 컨테이너 탈출을 달성합니다.
 
 ### Internal Error To Corruption
-<a id="fig4"></a>
+<span id="fig4"></span>
 ![s4](/assets/img/posts/papers/sok_kernel_hardening_4.png) <br>
 익스플로잇의 첫 단계는 커널 내부 오류를 유발하여 커널 스택, 힙, 전역/정적 영역에 메모리 오염을 일으키는 것입니다.
 
