@@ -1022,9 +1022,7 @@ if( (acfg->state == AS_WAITING_FOR_TARGET) && (fault->gfn ==(acfg->target_trigge
 
 ## 실제 세팅
 ```
-                                                                                                                                                                                        
-
-● 찾았어. property는 등록됐는데 QAPI 스키마가 debug를 모름. -object는 QAPI 타입 검증을 거쳐서 qom.json의 TdxGuestProperties에 정의된 것만 받음. 거기에 debug 추가해야 함:
+찾았어. property는 등록됐는데 QAPI 스키마가 debug를 모름. -object는 QAPI 타입 검증을 거쳐서 qom.json의 TdxGuestProperties에 정의된 것만 받음. 거기에 debug 추가해야 함:
 
 ● Bash(sed -n '880,925p' /home/user/css/TDXploit/qemu-src/qemu-8.2.2/qapi/qom.json)
   ⎿  ##
@@ -1071,9 +1069,6 @@ sudo reboot
 이제 TD에 들어갈 이미지를 구성해야 합니다. 일단 아티팩트의 `our_run_td.sh`에서 사용하고 있는 버전을 그대로 사용하고자 합니다: **tdx-guest-ubuntu-23.10.qcow2**
 
 다만 23.10 버전 이미지를 만들려면 `create-td-image.sh` 스크립트를 좀 수정해야 합니다. 23.10은 EOL이라 공식 지원 버전에서 벗어났기 때문입니다. 따라서 클라우드 이미지 다운로드 경로를 **old-releases.ubuntu.com** 으로 바꿔야 합니다. 그리고 스크립트를 사용할 때는 저 스크립트 외에도 tdx 폴더에 존재하는 여러 파일들이 필요합니다. 
-
-<details>
-<summary> 수정된 스크립트 (338 ~ 332 line 추가, 335 ~ 345 line 추가) </summary>
 
 ```bash
 #!/bin/bash
